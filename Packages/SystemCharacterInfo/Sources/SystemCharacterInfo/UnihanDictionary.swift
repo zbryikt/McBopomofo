@@ -84,7 +84,7 @@ public class UnihanDictionary {
 
     public func read(string: String) throws -> UnihanEntry {
         let table = Table("unihan_dict")
-        let uchr = Expression<String>("uchr")
+        let uchr = SQLite.Expression<String>("uchr")
         let query = table.filter(uchr == string).limit(1)
         let result = try db.prepare(query)
         let rows = Array(result)
