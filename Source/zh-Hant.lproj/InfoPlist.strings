@@ -1,5 +1,5 @@
-CFBundleName = "小麥注音";
-CFBundleDisplayName = "小麥注音";
+CFBundleName = "大麥語音";
+CFBundleDisplayName = "大麥語音";
 NSHumanReadableCopyright = "Copyright © 2011-2026 Mengjuei Hsieh et al.\nAll Rights Reserved.";
-"org.openvanilla.inputmethod.McBopomofo.Bopomofo" = "小麥注音";
-"org.openvanilla.inputmethod.McBopomofo.PlainBopomofo" = "傳統注音";
+"io.github.zbryikt.inputmethod.DaMaiVoice.Bopomofo" = "大麥語音";
+"io.github.zbryikt.inputmethod.DaMaiVoice.PlainBopomofo" = "大麥傳統注音";

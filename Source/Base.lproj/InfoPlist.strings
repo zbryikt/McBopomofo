@@ -1,5 +1,5 @@
-CFBundleName = "McBopomofo";
-CFBundleDisplayName = "McBopomofo";
+CFBundleName = "DaMai Voice";
+CFBundleDisplayName = "DaMai Voice";
 NSHumanReadableCopyright = "Copyright © 2011-2026 Mengjuei Hsieh et al.\nAll Rights Reserved.";
-"org.openvanilla.inputmethod.McBopomofo.Bopomofo" = "Bopomofo";
-"org.openvanilla.inputmethod.McBopomofo.PlainBopomofo" = "Plain Bopomofo";
+"io.github.zbryikt.inputmethod.DaMaiVoice.Bopomofo" = "DaMai Voice";
+"io.github.zbryikt.inputmethod.DaMaiVoice.PlainBopomofo" = "DaMai Plain Bopomofo";

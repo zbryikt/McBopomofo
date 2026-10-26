@@ -127,7 +127,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		6A0D4EA215FC0D2D00ABF4B3 /* McBopomofo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = McBopomofo.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		6A0D4EA215FC0D2D00ABF4B3 /* McBopomofo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DaMaiVoice.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6A0D4EEF15FC0DA600ABF4B3 /* Bopomofo.tiff */ = {isa = PBXFileReference; lastKnownFileType = image.tiff; path = Bopomofo.tiff; sourceTree = "<group>"; };
 		6A0D4EF015FC0DA600ABF4B3 /* Bopomofo@2x.tiff */ = {isa = PBXFileReference; lastKnownFileType = image.tiff; path = "Bopomofo@2x.tiff"; sourceTree = "<group>"; };
 		6A0D4EF515FC0DA600ABF4B3 /* McBopomofo-Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = "McBopomofo-Info.plist"; sourceTree = "<group>"; };
@@ -1099,8 +1099,9 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				ONLY_ACTIVE_ARCH = YES;
-				PRODUCT_BUNDLE_IDENTIFIER = org.openvanilla.inputmethod.McBopomofo;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.zbryikt.inputmethod.DaMaiVoice;
+				PRODUCT_MODULE_NAME = McBopomofo;
+				PRODUCT_NAME = DaMaiVoice;
 				SDKROOT = macosx;
 				SWIFT_OBJC_BRIDGING_HEADER = "Source/McBopomofo-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -1153,8 +1154,9 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				PRODUCT_BUNDLE_IDENTIFIER = org.openvanilla.inputmethod.McBopomofo;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.zbryikt.inputmethod.DaMaiVoice;
+				PRODUCT_MODULE_NAME = McBopomofo;
+				PRODUCT_NAME = DaMaiVoice;
 				SDKROOT = macosx;
 				SWIFT_OBJC_BRIDGING_HEADER = "Source/McBopomofo-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
@@ -1357,7 +1359,7 @@
 				SWIFT_OBJC_BRIDGING_HEADER = "McBopomofoTests/McBopomofoTests-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/McBopomofo.app/Contents/MacOS/McBopomofo";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/DaMaiVoice.app/Contents/MacOS/DaMaiVoice";
 			};
 			name = Debug;
 		};
@@ -1403,7 +1405,7 @@
 				SWIFT_OBJC_BRIDGING_HEADER = "McBopomofoTests/McBopomofoTests-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/McBopomofo.app/Contents/MacOS/McBopomofo";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/DaMaiVoice.app/Contents/MacOS/DaMaiVoice";
 			};
 			name = Release;
 		};
