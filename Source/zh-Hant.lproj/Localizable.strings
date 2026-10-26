@@ -258,3 +258,12 @@
 "You can run a script to use git to backup your phrases. The script will run in the folder of your user phrases folder." = "您可以在加詞之後，透過這個 Shell Script 執行指定的工作，像是使用 git 備份詞庫。這個 script 會在你的使用者詞彙資料夾下執行。";
 
 "Quick Text Transform" = "日韓多語拼音轉換";
+
+"Microphone access granted. Hold the key again to talk." = "已取得麥克風權限，請再按住按鍵說話。";
+"Microphone access denied." = "無法使用麥克風。";
+"Please allow DaMai Voice to use the microphone in System Settings." = "請到「系統設定」>「隱私權與安全性」>「麥克風」允許大麥語音使用麥克風。";
+"Listening... (release to finish, Esc to cancel)" = "聆聽中…（放開結束，Esc 取消）";
+"Recognizing..." = "辨識中…";
+"Polishing..." = "整理中…";
+"Voice input failed: " = "語音輸入失敗：";
+"Voice input copied to the clipboard" = "語音輸入結果已複製到剪貼簿";

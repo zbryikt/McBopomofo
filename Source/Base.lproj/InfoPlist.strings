@@ -3,3 +3,4 @@ CFBundleDisplayName = "DaMai Voice";
 NSHumanReadableCopyright = "Copyright © 2011-2026 Mengjuei Hsieh et al.\nAll Rights Reserved.";
 "io.github.zbryikt.inputmethod.DaMaiVoice.Bopomofo" = "DaMai Voice";
 "io.github.zbryikt.inputmethod.DaMaiVoice.PlainBopomofo" = "DaMai Plain Bopomofo";
+NSMicrophoneUsageDescription = "DaMai Voice uses the microphone for voice input.";

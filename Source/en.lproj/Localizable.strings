@@ -260,3 +260,12 @@
 "You can run a script to use git to backup your phrases. The script will run in the folder of your user phrases folder." = "You can run a script to use git to backup your phrases. The script will run in the folder of your user phrases folder.";
 
 "Quick Text Transform" = "Quick Text Transform";
+
+"Microphone access granted. Hold the key again to talk." = "Microphone access granted. Hold the key again to talk.";
+"Microphone access denied." = "Microphone access denied.";
+"Please allow DaMai Voice to use the microphone in System Settings." = "Please allow DaMai Voice to use the microphone in System Settings.";
+"Listening... (release to finish, Esc to cancel)" = "Listening... (release to finish, Esc to cancel)";
+"Recognizing..." = "Recognizing...";
+"Polishing..." = "Polishing...";
+"Voice input failed: " = "Voice input failed: ";
+"Voice input copied to the clipboard" = "Voice input copied to the clipboard";

@@ -58,6 +58,11 @@ private let kSwitchInputSourceUponCommandKeyPressInputSourceIDKey = "SwitchInput
 private let kShiftEnterEnabledKey = "ShiftEnterEnabled"
 private let kRepeatedPunctuationToSelectCandidateEnabledKey =
     "RepeatedPunctuationToSelectCandidateEnabled"
+private let kVoiceInputEnabledKey = "VoiceInputEnabled"
+private let kVoiceInputAPIKeyFileKey = "VoiceInputAPIKeyFile"
+private let kVoiceInputASRProviderKey = "VoiceInputASRProvider"
+private let kVoiceInputASRModelKey = "VoiceInputASRModel"
+private let kVoiceInputLLMModelKey = "VoiceInputLLMModel"
 private let kUseCustomUserPhraseLocation = "UseCustomUserPhraseLocation"
 private let kCustomUserPhraseLocation = "CustomUserPhraseLocation"
 
@@ -244,6 +249,11 @@ class Preferences: NSObject {
             kRepeatedPunctuationToSelectCandidateEnabledKey,
             kUseCustomUserPhraseLocation,
             kCustomUserPhraseLocation,
+            kVoiceInputEnabledKey,
+            kVoiceInputAPIKeyFileKey,
+            kVoiceInputASRProviderKey,
+            kVoiceInputASRModelKey,
+            kVoiceInputLLMModelKey,
         ]
     }
 
@@ -518,6 +528,28 @@ extension Preferences {
 
     @UserDefault(key: kSwitchInputSourceUponCommandKeyPressInputSourceIDKey, defaultValue: "com.apple.keylayout.ABC")
     static var switchInputSourceUponCommandKeyPressInputSourceID: String
+
+    /// Push-to-talk voice input with the right Option key (experimental).
+    @UserDefault(key: kVoiceInputEnabledKey, defaultValue: false)
+    static var voiceInputEnabled: Bool
+
+    /// A dotenv-style file containing OPENAI_API_KEY and/or ELEVENLABS_API_KEY.
+    @UserDefault(
+        key: kVoiceInputAPIKeyFileKey,
+        defaultValue: "~/Library/Application Support/DaMaiVoice/voice-input.env")
+    static var voiceInputAPIKeyFile: String
+
+    /// The speech recognition service: "openai" or "elevenlabs".
+    @UserDefault(key: kVoiceInputASRProviderKey, defaultValue: "openai")
+    static var voiceInputASRProvider: String
+
+    /// The speech recognition model. Empty to use the provider's default.
+    @UserDefault(key: kVoiceInputASRModelKey, defaultValue: "")
+    static var voiceInputASRModel: String
+
+    /// The OpenAI model used to polish the transcript. Empty to skip polishing.
+    @UserDefault(key: kVoiceInputLLMModelKey, defaultValue: "gpt-4.1")
+    static var voiceInputLLMModel: String
 }
 
 @objc class UserPhraseLocationHelper: NSObject {

@@ -3,3 +3,4 @@ CFBundleDisplayName = "大麥語音";
 NSHumanReadableCopyright = "Copyright © 2011-2026 Mengjuei Hsieh et al.\nAll Rights Reserved.";
 "io.github.zbryikt.inputmethod.DaMaiVoice.Bopomofo" = "大麥語音";
 "io.github.zbryikt.inputmethod.DaMaiVoice.PlainBopomofo" = "大麥傳統注音";
+NSMicrophoneUsageDescription = "大麥語音使用麥克風進行語音輸入。";

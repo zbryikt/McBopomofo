@@ -60,6 +60,9 @@ class McBopomofoInputMethodController: IMKInputController {
     // Share the stored issues, so a set of issues is shown as notification only once.
     static var latestUserFileIssues: [String] = []
 
+    // The controller of the currently focused client, which receives voice input results.
+    private static weak var activeController: McBopomofoInputMethodController?
+
     // MARK: - IMKInputController methods
 
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
@@ -175,6 +178,7 @@ class McBopomofoInputMethodController: IMKInputController {
             withKeyboardNamed: Preferences.basisKeyboardLayout)
         // reset the state
         currentClient = client
+        McBopomofoInputMethodController.activeController = self
 
         keyHandler.clear()
         keyHandler.syncWithPreferences()
@@ -184,6 +188,9 @@ class McBopomofoInputMethodController: IMKInputController {
 
     override func deactivateServer(_ client: Any!) {
         currentClient = nil
+        if McBopomofoInputMethodController.activeController === self {
+            McBopomofoInputMethodController.activeController = nil
+        }
         keyHandler.clear()
         self.handle(state: .Deactivated(), client: client)
     }
@@ -224,6 +231,10 @@ class McBopomofoInputMethodController: IMKInputController {
         guard let event = maybeEvent else {
             commitComposition(client)
             return false
+        }
+
+        if Preferences.voiceInputEnabled && handleVoiceInput(event: event, client: client) {
+            return true
         }
 
         if event.type == .flagsChanged {
@@ -395,6 +406,65 @@ class McBopomofoInputMethodController: IMKInputController {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+}
+
+// MARK: - Voice Input
+
+// NX_DEVICERALTKEYMASK: distinguishes the right Option key from the left one.
+private let kRightOptionKeyDeviceMask: UInt = 0x40
+
+extension McBopomofoInputMethodController {
+
+    /// Handles push-to-talk: holding the right Option key records, releasing
+    /// it transcribes. Returns true if the event is consumed.
+    private func handleVoiceInput(event: NSEvent, client: Any!) -> Bool {
+        let voiceInput = VoiceInputController.shared
+
+        if event.type == .flagsChanged && event.keyCode == UInt16(kVK_RightOption) {
+            let isDown = event.modifierFlags.rawValue & kRightOptionKeyDeviceMask != 0
+            if isDown && voiceInput.phase == .idle && state is InputState.Empty,
+                let client = client as? IMKTextInput
+            {
+                voiceInput.start(client: client) { text in
+                    McBopomofoInputMethodController.commitVoiceInput(text)
+                }
+                return true
+            }
+            if !isDown && voiceInput.phase == .recording {
+                voiceInput.finishRecording()
+                return true
+            }
+            return false
+        }
+
+        if event.type == .keyDown && voiceInput.phase != .idle {
+            if event.keyCode == UInt16(kVK_Escape) {
+                voiceInput.cancel()
+                return true
+            }
+            if voiceInput.phase == .recording {
+                // Right Option is being used as a modifier (e.g. Option + key),
+                // not for talking.
+                voiceInput.cancel()
+            }
+        }
+        return false
+    }
+
+    /// Commits voice input to the focused client, or copies it to the
+    /// pasteboard if McBopomofo is no longer active or is composing.
+    private static func commitVoiceInput(_ text: String) {
+        if let controller = activeController, let client = controller.currentClient,
+            controller.state is InputState.Empty
+        {
+            controller.commit(text: text, client: client)
+            return
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        NotifierController.notify(
+            message: NSLocalizedString("Voice input copied to the clipboard", comment: ""))
+    }
 }
 
 // MARK: - State Handling
