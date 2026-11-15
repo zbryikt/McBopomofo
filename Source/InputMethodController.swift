@@ -410,9 +410,6 @@ class McBopomofoInputMethodController: IMKInputController {
 
 // MARK: - Voice Input
 
-// NX_DEVICERALTKEYMASK: distinguishes the right Option key from the left one.
-private let kRightOptionKeyDeviceMask: UInt = 0x40
-
 extension McBopomofoInputMethodController {
 
     /// Handles push-to-talk: holding the right Option key records, releasing
@@ -421,8 +418,12 @@ extension McBopomofoInputMethodController {
         let voiceInput = VoiceInputController.shared
 
         if event.type == .flagsChanged && event.keyCode == UInt16(kVK_RightOption) {
-            let isDown = event.modifierFlags.rawValue & kRightOptionKeyDeviceMask != 0
-            if isDown && voiceInput.phase == .idle && state is InputState.Empty,
+            // IMK strips the device-dependent bits (e.g. NX_DEVICERALTKEYMASK)
+            // from modifierFlags, so infer press/release from the key code:
+            // each flagsChanged for the right Option key toggles its state.
+            let isDown = voiceInput.phase == .idle && event.modifierFlags.contains(.option)
+            if isDown
+                && (state is InputState.Empty || state is InputState.EmptyIgnoringPreviousState),
                 let client = client as? IMKTextInput
             {
                 voiceInput.start(client: client) { text in
@@ -430,7 +431,7 @@ extension McBopomofoInputMethodController {
                 }
                 return true
             }
-            if !isDown && voiceInput.phase == .recording {
+            if voiceInput.phase == .recording {
                 voiceInput.finishRecording()
                 return true
             }
