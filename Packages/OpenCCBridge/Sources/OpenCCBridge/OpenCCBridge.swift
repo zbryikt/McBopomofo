@@ -34,10 +34,12 @@ public class OpenCCBridge: NSObject {
 
     private var t2s: ChineseConverter?
     private var s2t: ChineseConverter?
+    private var s2twp: ChineseConverter?
 
     private override init() {
         try? t2s = ChineseConverter(options: .simplify)
         try? s2t = ChineseConverter(options: .traditionalize)
+        try? s2twp = ChineseConverter(options: [.traditionalize, .twStandard, .twIdiom])
         super.init()
     }
 
@@ -55,5 +57,14 @@ public class OpenCCBridge: NSObject {
     /// - Returns: Text in Traditional Chinese.
     @objc public func convertToTraditional(_ string: String) -> String? {
         s2t?.convert(string)
+    }
+
+    /// Converts to Traditional Chinese with Taiwanese phrasing, e.g. 软件 to
+    /// 軟體.
+    ///
+    /// - Parameter string: Text in Simplified Chinese.
+    /// - Returns: Text in Traditional Chinese as used in Taiwan.
+    @objc public func convertToTaiwanese(_ string: String) -> String? {
+        s2twp?.convert(string)
     }
 }

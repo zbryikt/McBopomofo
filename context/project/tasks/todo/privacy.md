@@ -6,13 +6,15 @@
 
 | 資料 | 送往 | 時機 |
 |---|---|---|
-| 麥克風音訊（24 kHz PCM） | OpenAI Realtime API（`gpt-4o-transcribe` 與預覽用的 `gpt-live-transcribe` 各一份） | 按住右 Option 期間即時串流 |
+| 麥克風音訊（24 kHz PCM） | ElevenLabs Scribe realtime（`scribe_v3_live`，預設） | 錄音期間即時串流 |
+| 麥克風音訊（24 kHz PCM） | OpenAI Realtime API（`gpt-4o-transcribe` 與預覽用的 `gpt-live-transcribe` 各一份） | provider 設為 `openai-realtime` 時 |
 | 音訊（WAV） | OpenAI `/audio/transcriptions` 或 ElevenLabs Scribe | 只在 provider 設為 `openai` / `elevenlabs` 時，放開後整段上傳 |
 | 辨識後的逐字稿 | OpenAI Chat Completions（潤飾模型） | 放開後，潤飾強度 > 0 時 |
 | 目前 App 的名稱 | 同上，放在 system prompt | 同上 |
 
 - API key 從偏好設定指定的 dotenv 檔讀取，不進 repo、不寫 log。
 - 本機暫存：音訊只在記憶體，不落地；Console log 只記錄長度與音量，不記錄內容。
+- 例外：開啟 `VoiceInputDebug` 時，每段送出的音訊與辨識結果會存到 `~/Library/Application Support/DaMaiVoice/voice-debug/`，除錯完要關掉並清除。
 
 ## 待辦
 
@@ -23,5 +25,6 @@
 - [ ] App 黑名單：在指定 App（例如密碼管理器、網銀、內部工具）停用語音輸入或強制本機模式。
 - [ ] 不送 App 名稱的選項。
 - [ ] 首次啟用時的告知：說明音訊與文字會送往哪些服務，需使用者同意後才啟用。
+- [ ] ElevenLabs 即時 API 的 `enable_logging=false`（不保留資料）只對企業方案生效；一般帳號送出時伺服器會回 warning、照常保留。需確認保留期限，或評估升級方案。
 - [ ] 確認各服務的資料保留政策（OpenAI API 預設保留天數、是否可申請 Zero Data Retention；ElevenLabs 的保留設定），寫進說明。
 - [ ] 錄音中的明確提示（目前只有 tooltip），避免使用者不知道正在收音。

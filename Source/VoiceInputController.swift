@@ -55,9 +55,9 @@ class VoiceInputController: NSObject {
     private var tooltipOrigin = NSPoint.zero
     private var capture: AudioCapture?
     /// Produces the final transcript.
-    private var transcriber: RealtimeTranscriber?
+    private var transcriber: StreamingTranscriber?
     /// A faster model whose partial transcript is previewed while talking.
-    private var previewTranscriber: RealtimeTranscriber?
+    private var previewTranscriber: StreamingTranscriber?
     private var recordedAudio = Data()
     private var recordingStartTime: Date?
     private var maxDurationTimer: Timer?
@@ -77,6 +77,7 @@ class VoiceInputController: NSObject {
     private var segments: [Segment] = []
     private var committedAudioItems = 0
     private var previewItems: [String] = []
+    private var debugDirectory: URL?
     private var lastTypedTime = Date.distantPast
     /// Speech captured since the last split of the audio, in seconds.
     private var voicedSinceSplit: TimeInterval = 0
@@ -95,7 +96,7 @@ class VoiceInputController: NSObject {
     private let maximumDuration: TimeInterval = 180
 
     private var isStreaming: Bool {
-        Preferences.voiceInputASRProvider == "openai-realtime"
+        ["elevenlabs-realtime", "openai-realtime"].contains(Preferences.voiceInputASRProvider)
     }
 
     // MARK: - Public interface
@@ -140,7 +141,23 @@ class VoiceInputController: NSObject {
         }
 
         do {
-            if isStreaming {
+            if Preferences.voiceInputASRProvider == "elevenlabs-realtime" {
+                let transcriber = ElevenLabsTranscriber(
+                    apiKey: try Self.apiKey(named: "ELEVENLABS_API_KEY"),
+                    model: Preferences.voiceInputASRModel.isEmpty
+                        ? "scribe_v3_live" : Preferences.voiceInputASRModel)
+                transcriber.onError = { [weak self] error in
+                    self?.fail(with: error)
+                }
+                transcriber.onUpdate = { [weak self] items in
+                    guard let self = self, self.phase == .recording else {
+                        return
+                    }
+                    self.previewItems = items.map(Self.toTraditional)
+                    self.showComposedPreview()
+                }
+                self.transcriber = transcriber
+            } else if isStreaming {
                 let apiKey = try Self.apiKey(named: "OPENAI_API_KEY")
                 let model = Preferences.voiceInputASRModel.isEmpty
                     ? "gpt-4o-transcribe" : Preferences.voiceInputASRModel
@@ -171,6 +188,21 @@ class VoiceInputController: NSObject {
                     }
                     self.previewItems = items.map(Self.toTraditional)
                     self.showComposedPreview()
+                }
+                self.transcriber = transcriber
+            }
+            if let transcriber = transcriber {
+                if Preferences.voiceInputDebug {
+                    let formatter = DateFormatter()
+                    formatter.dateFormat = "yyyyMMdd-HHmmss"
+                    let directory = URL(
+                        fileURLWithPath: UserPhraseLocationHelper.defaultUserPhraseLocation)
+                        .appendingPathComponent("voice-debug")
+                        .appendingPathComponent(formatter.string(from: Date()))
+                    try? FileManager.default.createDirectory(
+                        at: directory, withIntermediateDirectories: true)
+                    transcriber.debugDirectory = directory
+                    debugDirectory = directory
                 }
                 transcriber.start()
                 previewTranscriber?.start()
@@ -224,9 +256,6 @@ class VoiceInputController: NSObject {
         maxDurationTimer = nil
         capture.stop()
         self.capture = nil
-        // The preview has served its purpose once the key is released.
-        previewTranscriber?.close()
-        previewTranscriber = nil
 
         let duration = Date().timeIntervalSince(recordingStartTime ?? Date())
         if duration < minimumDuration {
@@ -257,6 +286,7 @@ class VoiceInputController: NSObject {
 
         let appName = appName
         let transcriber = transcriber
+        let previewTranscriber = previewTranscriber
         let audio = recordedAudio
         let segments = segments
         task = Task { @MainActor [weak self] in
@@ -265,7 +295,18 @@ class VoiceInputController: NSObject {
                 if isSilent {
                     // Only typed text.
                 } else if let transcriber = transcriber {
+                    async let previews = try? previewTranscriber?.finish()
                     items = try await transcriber.finish().map(Self.toTraditional)
+                    // The final model makes up text for audio without speech
+                    // (e.g. key clicks), while the preview model returns
+                    // nothing for it: drop what only the final model heard.
+                    if let previews = await previews, previews.count == items.count {
+                        for (index, preview) in previews.enumerated()
+                        where Self.isBlank(preview) && !Self.isBlank(items[index]) {
+                            NSLog("McBopomofo voice input: dropped item %d heard only by the final model", index)
+                            items[index] = ""
+                        }
+                    }
                 } else {
                     items = [try await Self.transcribe(audio: AudioCapture.wavData(pcm: audio))]
                 }
@@ -273,6 +314,18 @@ class VoiceInputController: NSObject {
                 // Some models echo the prompt back when they hear nothing useful.
                 items = items.map {
                     $0.trimmingCharacters(in: .whitespacesAndNewlines) == Self.asrPrompt ? "" : $0
+                }
+                if let directory = self?.debugDirectory {
+                    let typed = segments.compactMap { segment -> String? in
+                        if case .typed(let text) = segment { return text }
+                        return nil
+                    }
+                    let record: [String: Any] = [
+                        "items": items, "preview": self?.previewItems ?? [], "typed": typed,
+                        "composed": Self.compose(segments: segments, items: items, tagTyped: true),
+                    ]
+                    try? JSONSerialization.data(withJSONObject: record, options: .prettyPrinted)
+                        .write(to: directory.appendingPathComponent("transcripts.json"))
                 }
                 let transcript = Self.compose(segments: segments, items: items, tagTyped: false)
                 self?.show(preview: transcript)
@@ -357,7 +410,7 @@ class VoiceInputController: NSObject {
         }
         NSLog("McBopomofo voice input: split with %.2fs of speech", voicedSinceSplit)
         if voicedSinceSplit >= minimumVoicedDuration
-            && transcriber.uncommittedBytes >= RealtimeTranscriber.minimumCommitBytes
+            && transcriber.uncommittedBytes >= minimumCommitBytes
         {
             transcriber.commit()
             previewTranscriber?.commit()
@@ -472,6 +525,7 @@ class VoiceInputController: NSObject {
         previewItems = []
         lastTypedTime = .distantPast
         voicedSinceSplit = 0
+        debugDirectory = nil
         recordedAudio = Data()
         recordingStartTime = nil
         task = nil
@@ -507,8 +561,17 @@ class VoiceInputController: NSObject {
         tooltip.show(tooltip: message, at: tooltipOrigin)
     }
 
+    /// Whether a transcript has no words, only punctuation and spaces.
+    private static func isBlank(_ text: String) -> Bool {
+        text.unicodeScalars.allSatisfy {
+            CharacterSet.punctuationCharacters.union(.whitespacesAndNewlines).contains($0)
+        }
+    }
+
+    /// Converts ASR output to Traditional Chinese as used in Taiwan; most
+    /// models output Simplified Chinese for Mandarin.
     private static func toTraditional(_ text: String) -> String {
-        OpenCCBridge.shared.convertToTraditional(text) ?? text
+        OpenCCBridge.shared.convertToTaiwanese(text) ?? text
     }
 
     private static func cursorOrigin(for client: IMKTextInput) -> NSPoint {
@@ -667,6 +730,258 @@ private class AudioCapture {
     }
 }
 
+// MARK: - Streaming transcription
+
+/// A streaming speech recognition session.
+///
+/// Audio is split into items only when `commit()` is called, so that text
+/// typed while talking can be placed between them. Partial transcripts arrive
+/// while talking.
+private protocol StreamingTranscriber: AnyObject {
+    /// Called on the main thread with the transcripts so far, one per item.
+    var onUpdate: (([String]) -> Void)? { get set }
+    /// Called on the main thread when the session fails.
+    var onError: ((Error) -> Void)? { get set }
+    /// Audio appended since the last commit or clear, in bytes.
+    var uncommittedBytes: Int { get }
+    /// Where to save each committed or cleared audio item, for debugging.
+    var debugDirectory: URL? { get set }
+
+    func start()
+    func append(audio: Data)
+    /// Ends the current item. The caller makes sure there is enough audio.
+    func commit()
+    /// Drops the audio since the last commit, and any partial transcript of it.
+    func clear()
+    /// Waits for the final transcripts of all committed items.
+    func finish() async throws -> [String]
+    func close()
+}
+
+/// The minimum audio worth committing: 100 ms of 16-bit PCM.
+private let minimumCommitBytes = Int(AudioCapture.sampleRate) / 10 * 2
+
+/// Saves audio items for debugging.
+private struct DebugAudioRecorder {
+    var directory: URL?
+    private var audio = Data()
+    private var clearCount = 0
+
+    mutating func append(_ data: Data) {
+        if directory != nil {
+            audio.append(data)
+        }
+    }
+
+    mutating func save(committedItem index: Int) {
+        save(named: "item-\(index).wav")
+    }
+
+    mutating func saveCleared() {
+        save(named: "cleared-\(clearCount).wav")
+        clearCount += 1
+    }
+
+    private mutating func save(named name: String) {
+        if let directory = directory {
+            try? AudioCapture.wavData(pcm: audio).write(to: directory.appendingPathComponent(name))
+        }
+        audio = Data()
+    }
+}
+
+// MARK: - ElevenLabs realtime transcription
+
+/// Streams audio to ElevenLabs Scribe realtime, committing manually.
+///
+/// The session has no way to drop uncommitted audio, so clearing commits it
+/// and ignores the resulting transcript.
+private class ElevenLabsTranscriber: StreamingTranscriber {
+    var onUpdate: (([String]) -> Void)?
+    var onError: ((Error) -> Void)?
+    private(set) var uncommittedBytes = 0
+    var debugDirectory: URL? {
+        get { debugRecorder.directory }
+        set { debugRecorder.directory = newValue }
+    }
+
+    private let socket: URLSessionWebSocketTask
+    /// Transcripts of the committed items that are kept.
+    private var transcripts: [String] = []
+    /// Whether each commit awaiting its transcript is kept, in commit order.
+    private var pendingCommits: [Bool] = []
+    private var partialTranscript = ""
+    private var finishContinuation: CheckedContinuation<[String], Error>?
+    private var closed = false
+    private var debugRecorder = DebugAudioRecorder()
+
+    init(apiKey: String, model: String) {
+        var components = URLComponents(string: "wss://api.elevenlabs.io/v1/speech-to-text/realtime")!
+        components.queryItems = [
+            URLQueryItem(name: "model_id", value: model),
+            URLQueryItem(name: "audio_format", value: "pcm_\(Int(AudioCapture.sampleRate))"),
+            URLQueryItem(name: "commit_strategy", value: "manual"),
+            URLQueryItem(name: "language_code", value: "zh"),
+            URLQueryItem(name: "enable_logging", value: "false"),
+        ]
+        var request = URLRequest(url: components.url!)
+        request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
+        socket = URLSession.shared.webSocketTask(with: request)
+    }
+
+    func start() {
+        socket.resume()
+        receive()
+    }
+
+    func append(audio: Data) {
+        uncommittedBytes += audio.count
+        debugRecorder.append(audio)
+        send(audio: audio, commit: false)
+    }
+
+    func commit() {
+        debugRecorder.save(committedItem: transcripts.count + pendingCommits.filter { $0 }.count)
+        pendingCommits.append(true)
+        uncommittedBytes = 0
+        send(audio: Data(), commit: true)
+    }
+
+    func clear() {
+        debugRecorder.saveCleared()
+        partialTranscript = ""
+        if uncommittedBytes > 0 {
+            pendingCommits.append(false)
+            uncommittedBytes = 0
+            send(audio: Data(), commit: true)
+        }
+        onUpdate?(transcripts)
+    }
+
+    func finish() async throws -> [String] {
+        if closed {
+            throw CancellationError()
+        }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                finishContinuation = continuation
+                resolveIfDone()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+                    self?.resolve(.failure(VoiceInputError.message("Transcription timed out")))
+                }
+            }
+        } onCancel: {
+            DispatchQueue.main.async { [weak self] in
+                self?.resolve(.failure(CancellationError()))
+            }
+        }
+    }
+
+    func close() {
+        guard !closed else {
+            return
+        }
+        closed = true
+        socket.cancel(with: .normalClosure, reason: nil)
+        resolve(.failure(CancellationError()))
+    }
+
+    private func resolveIfDone() {
+        if finishContinuation != nil && pendingCommits.isEmpty {
+            resolve(.success(transcripts))
+        }
+    }
+
+    private func resolve(_ result: Result<[String], Error>) {
+        guard let continuation = finishContinuation else {
+            return
+        }
+        finishContinuation = nil
+        continuation.resume(with: result)
+    }
+
+    private func send(audio: Data, commit: Bool) {
+        let event: [String: Any] = [
+            "message_type": "input_audio_chunk",
+            "audio_base_64": audio.base64EncodedString(),
+            "commit": commit,
+            "sample_rate": Int(AudioCapture.sampleRate),
+        ]
+        guard !closed, let data = try? JSONSerialization.data(withJSONObject: event),
+            let text = String(data: data, encoding: .utf8)
+        else {
+            return
+        }
+        socket.send(.string(text)) { [weak self] error in
+            if let error = error {
+                DispatchQueue.main.async {
+                    self?.handle(error: error)
+                }
+            }
+        }
+    }
+
+    private func receive() {
+        socket.receive { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self, !self.closed else {
+                    return
+                }
+                switch result {
+                case .success(.string(let text)):
+                    self.handle(message: text)
+                    self.receive()
+                case .success:
+                    self.receive()
+                case .failure(let error):
+                    self.handle(error: error)
+                }
+            }
+        }
+    }
+
+    private func handle(message: String) {
+        guard let data = message.data(using: .utf8),
+            let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let type = event["message_type"] as? String
+        else {
+            return
+        }
+        switch type {
+        case "session_started", "warning", "committed_transcript_with_timestamps":
+            break
+        case "partial_transcript":
+            partialTranscript = event["text"] as? String ?? ""
+            onUpdate?(transcripts + [partialTranscript])
+        case "committed_transcript":
+            guard !pendingCommits.isEmpty else {
+                return
+            }
+            if pendingCommits.removeFirst() {
+                transcripts.append(event["text"] as? String ?? "")
+            }
+            partialTranscript = ""
+            onUpdate?(transcripts)
+            resolveIfDone()
+        default:
+            let error = event["error"] as? String ?? event["message"] as? String ?? type
+            handle(error: VoiceInputError.message("ElevenLabs: \(error)"))
+        }
+    }
+
+    private func handle(error: Error) {
+        guard !closed else {
+            return
+        }
+        if finishContinuation != nil {
+            resolve(.failure(error))
+        } else {
+            onError?(error)
+        }
+        close()
+    }
+}
+
 // MARK: - OpenAI Realtime transcription
 
 /// Streams audio to the OpenAI Realtime API in a transcription session.
@@ -674,14 +989,11 @@ private class AudioCapture {
 /// Turn detection is off: audio is split into items only when `commit()` is
 /// called, so that text typed while talking can be placed between them.
 /// Partial transcripts arrive while talking.
-private class RealtimeTranscriber {
+private class RealtimeTranscriber: StreamingTranscriber {
     /// Called on the main thread with the transcripts so far, one per item.
     var onUpdate: (([String]) -> Void)?
     /// Called on the main thread when the session fails.
     var onError: ((Error) -> Void)?
-
-    /// The minimum audio the API accepts in a commit: 100 ms of 16-bit PCM.
-    static let minimumCommitBytes = Int(AudioCapture.sampleRate) / 10 * 2
 
     private let socket: URLSessionWebSocketTask
     private let session: [String: Any]
@@ -698,6 +1010,19 @@ private class RealtimeTranscriber {
 
     /// Audio appended since the last commit, in bytes.
     private(set) var uncommittedBytes = 0
+    /// Where to save each committed or cleared audio item, for debugging.
+    var debugDirectory: URL?
+    private var debugAudio = Data()
+    private var debugClearCount = 0
+
+    private func saveDebugAudio(named name: String) {
+        guard let directory = debugDirectory else {
+            return
+        }
+        try? AudioCapture.wavData(pcm: debugAudio).write(
+            to: directory.appendingPathComponent(name))
+        debugAudio = Data()
+    }
 
     init(apiKey: String, model: String, prompt: String) {
         var request = URLRequest(
@@ -724,11 +1049,15 @@ private class RealtimeTranscriber {
 
     func append(audio: Data) {
         uncommittedBytes += audio.count
+        if debugDirectory != nil {
+            debugAudio.append(audio)
+        }
         send(["type": "input_audio_buffer.append", "audio": audio.base64EncodedString()])
     }
 
     /// Ends the current item. The caller makes sure there is enough audio.
     func commit() {
+        saveDebugAudio(named: "item-\(commitCount).wav")
         uncommittedBytes = 0
         commitCount += 1
         send(["type": "input_audio_buffer.commit"])
@@ -736,6 +1065,8 @@ private class RealtimeTranscriber {
 
     /// Drops the audio since the last commit, and any partial transcript of it.
     func clear() {
+        saveDebugAudio(named: "cleared-\(debugClearCount).wav")
+        debugClearCount += 1
         uncommittedBytes = 0
         send(["type": "input_audio_buffer.clear"])
         for itemID in itemIDs where !committedItemIDs.contains(itemID) {
@@ -748,6 +1079,9 @@ private class RealtimeTranscriber {
 
     /// Waits for the final transcripts of all committed items.
     func finish() async throws -> [String] {
+        if closed {
+            throw CancellationError()
+        }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 finishContinuation = continuation

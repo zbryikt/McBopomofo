@@ -65,6 +65,7 @@ private let kVoiceInputASRModelKey = "VoiceInputASRModel"
 private let kVoiceInputLLMModelKey = "VoiceInputLLMModel"
 private let kVoiceInputPreviewModelKey = "VoiceInputPreviewModel"
 private let kVoiceInputPolishLevelKey = "VoiceInputPolishLevel"
+private let kVoiceInputDebugKey = "VoiceInputDebug"
 private let kUseCustomUserPhraseLocation = "UseCustomUserPhraseLocation"
 private let kCustomUserPhraseLocation = "CustomUserPhraseLocation"
 
@@ -258,6 +259,7 @@ class Preferences: NSObject {
             kVoiceInputLLMModelKey,
             kVoiceInputPreviewModelKey,
             kVoiceInputPolishLevelKey,
+            kVoiceInputDebugKey,
         ]
     }
 
@@ -543,9 +545,10 @@ extension Preferences {
         defaultValue: "~/Library/Application Support/DaMaiVoice/voice-input.env")
     static var voiceInputAPIKeyFile: String
 
-    /// The speech recognition service: "openai-realtime" (streaming), "openai" or
-    /// "elevenlabs".
-    @UserDefault(key: kVoiceInputASRProviderKey, defaultValue: "openai-realtime")
+    /// The speech recognition service: "elevenlabs-realtime" or
+    /// "openai-realtime" (streaming), or "elevenlabs" or "openai" (whole
+    /// recording on release).
+    @UserDefault(key: kVoiceInputASRProviderKey, defaultValue: "elevenlabs-realtime")
     static var voiceInputASRProvider: String
 
     /// The speech recognition model that produces the final transcript. Empty
@@ -565,6 +568,11 @@ extension Preferences {
     /// How much the LLM polishes the transcript, from 0 (not at all) to 10.
     @UserDefault(key: kVoiceInputPolishLevelKey, defaultValue: 5)
     static var voiceInputPolishLevel: Int
+
+    /// Saves the audio items sent for transcription and their transcripts
+    /// under the user data folder, for debugging.
+    @UserDefault(key: kVoiceInputDebugKey, defaultValue: false)
+    static var voiceInputDebug: Bool
 }
 
 @objc class UserPhraseLocationHelper: NSObject {
