@@ -270,5 +270,7 @@
 "Polish level %d %@ (↑↓ to adjust)" = "潤飾強度 %d %@（↑↓ 調整）";
 "Typing: English (Left Option to switch)" = "打字：英文（左 Option 切換）";
 "Typing: Bopomofo (Left Option to switch)" = "打字：注音（左 Option 切換）";
+"Check: Enter to commit, ←→ to move, ↓ to narrow, ↑ for candidates, Esc to cancel" = "檢查：Enter 送出・←→ 移動・↓ 縮小範圍・↑ 選字・⌘←→ 微調・Esc 取消";
+"Number to choose, Esc to close" = "按數字選字，Esc 關閉";
 "Voice input failed: " = "語音輸入失敗：";
 "Voice input copied to the clipboard" = "語音輸入結果已複製到剪貼簿";

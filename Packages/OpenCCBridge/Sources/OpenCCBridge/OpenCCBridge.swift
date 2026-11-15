@@ -39,7 +39,7 @@ public class OpenCCBridge: NSObject {
     private override init() {
         try? t2s = ChineseConverter(options: .simplify)
         try? s2t = ChineseConverter(options: .traditionalize)
-        try? s2twp = ChineseConverter(options: [.traditionalize, .twStandard, .twIdiom])
+        try? s2twp = ChineseConverter(options: [.traditionalize, .twStandard])
         super.init()
     }
 
@@ -59,8 +59,9 @@ public class OpenCCBridge: NSObject {
         s2t?.convert(string)
     }
 
-    /// Converts to Traditional Chinese with Taiwanese phrasing, e.g. 软件 to
-    /// 軟體.
+    /// Converts to Traditional Chinese with Taiwanese character forms (e.g.
+    /// 着 to 著). Phrasing is left as is: phrase replacement such as 项目 to
+    /// 專案 is wrong as often as right.
     ///
     /// - Parameter string: Text in Simplified Chinese.
     /// - Returns: Text in Traditional Chinese as used in Taiwan.

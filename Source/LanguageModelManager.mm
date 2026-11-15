@@ -25,6 +25,8 @@
 #import "LanguageModelManager+Privates.h"
 #import "McBopomofo-Swift.h"
 
+#include <algorithm>
+
 #include "UTF8Helper.h"
 #include "AssociatedPhrasesV2.h"
 
@@ -488,6 +490,29 @@ static void LTLoadVariantAnnotatorData()
 
     std::string reading = gLanguageModelMcBopomofo.getReading(phrase.UTF8String);
     return !reading.empty() ? @(reading.c_str()) : nil;
+}
+
++ (NSArray<NSString *> *)homophonesFor:(NSString *)phrase
+{
+    NSString *reading = [self readingFor:phrase];
+    if (!reading) {
+        return @[];
+    }
+    auto unigrams = gLanguageModelMcBopomofo.getUnigrams(reading.UTF8String);
+    std::stable_sort(unigrams.begin(), unigrams.end(), [](const auto &a, const auto &b) {
+        return a.score() > b.score();
+    });
+    NSMutableArray<NSString *> *result = [NSMutableArray array];
+    for (const auto &unigram : unigrams) {
+        NSString *value = @(unigram.value().c_str());
+        if (![result containsObject:value]) {
+            [result addObject:value];
+        }
+    }
+    if (![result containsObject:phrase]) {
+        [result insertObject:phrase atIndex:0];
+    }
+    return result;
 }
 
 + (NSString *)annotateVariantForCharacters:(NSString *)inCharacters readings:(NSString *)inReadings

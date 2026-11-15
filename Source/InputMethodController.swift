@@ -193,7 +193,12 @@ class McBopomofoInputMethodController: IMKInputController {
     override func deactivateServer(_ client: Any!) {
         // The voice input preview lives in this client's marked text.
         if McBopomofoInputMethodController.voiceInputController === self {
-            VoiceInputController.shared.cancel()
+            let voiceInput = VoiceInputController.shared
+            if voiceInput.phase == .reviewing {
+                voiceInput.commitReview()
+            } else {
+                voiceInput.cancel()
+            }
         }
         currentClient = nil
         if McBopomofoInputMethodController.activeController === self {
@@ -230,7 +235,7 @@ class McBopomofoInputMethodController: IMKInputController {
     }
 
     override func recognizedEvents(_ sender: Any!) -> Int {
-        let events: NSEvent.EventTypeMask = [.keyDown, .keyUp, .flagsChanged]
+        let events: NSEvent.EventTypeMask = [.keyDown, .keyUp, .flagsChanged, .leftMouseDown]
         return Int(events.rawValue)
     }
 
@@ -243,6 +248,11 @@ class McBopomofoInputMethodController: IMKInputController {
 
         if Preferences.voiceInputEnabled && handleVoiceInput(event: event, client: client) {
             return true
+        }
+        // Mouse events are recognized only for correcting voice input (see
+        // mouseDown(onCharacterIndex:)); the key handler takes key events.
+        if event.type == .leftMouseDown {
+            return false
         }
 
         if event.type == .flagsChanged {
@@ -309,7 +319,7 @@ class McBopomofoInputMethodController: IMKInputController {
                 event.modifierFlags.intersection([.command, .control]).isEmpty,
                 characters.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) })
             {
-                VoiceInputController.shared.append(typedText: characters)
+                VoiceInputController.shared.insert(typedText: characters)
             }
             return true
         }
@@ -467,7 +477,7 @@ extension McBopomofoInputMethodController {
                     if !voiceInput.isToggleMode || isDown {
                         finishVoiceRecording(client: client)
                     }
-                case .processing:
+                case .processing, .reviewing:
                     break
                 }
                 return true
@@ -495,6 +505,11 @@ extension McBopomofoInputMethodController {
         let keyCode = Int(event.keyCode)
         let isEnter = keyCode == kVK_Return || keyCode == kVK_ANSI_KeypadEnter
 
+        if voiceInput.phase == .reviewing {
+            // While composing, keys go to the key handler as usual; committed
+            // text is inserted into the result.
+            return isEmpty ? handleVoiceInputReview(keyCode: keyCode, event: event) : false
+        }
         if voiceInput.phase == .processing {
             // Enter commits the preview as is; Esc cancels; other keys are
             // ignored.
@@ -544,13 +559,86 @@ extension McBopomofoInputMethodController {
             if let characters = event.characters, !characters.isEmpty,
                 characters.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) })
             {
-                voiceInput.append(typedText: characters)
+                voiceInput.insert(typedText: characters)
             }
             return true
         }
         // Bopomofo: the key handler composes, and committed text joins the
         // voice input.
         return false
+    }
+
+    /// Handles keys while checking the result. Returns false for keys that
+    /// commit the result and then go on to the key handler.
+    private func handleVoiceInputReview(keyCode: Int, event: NSEvent) -> Bool {
+        let voiceInput = VoiceInputController.shared
+        if !voiceInput.candidates.isEmpty {
+            if let digit = Int(event.charactersIgnoringModifiers ?? ""), (1...9).contains(digit) {
+                voiceInput.chooseCandidate(at: digit - 1)
+                return true
+            }
+            if keyCode == kVK_Escape {
+                voiceInput.closeCandidates()
+                return true
+            }
+        }
+        switch keyCode {
+        case kVK_Return, kVK_ANSI_KeypadEnter:
+            voiceInput.commitReview()
+        case kVK_Escape:
+            voiceInput.cancel()
+        case kVK_LeftArrow, kVK_RightArrow:
+            let toRight = keyCode == kVK_RightArrow
+            if event.modifierFlags.contains(.command) {
+                voiceInput.shiftSelection(by: toRight ? 1 : -1)
+            } else {
+                voiceInput.moveSelection(toRight: toRight)
+            }
+        case kVK_DownArrow:
+            voiceInput.narrowSelection()
+        case kVK_Space where voiceInput.isTypingEnglish:
+            voiceInput.insert(typedText: " ")
+        case kVK_UpArrow, kVK_Space:
+            voiceInput.openSelectionCandidates()
+        case kVK_Delete:
+            voiceInput.deleteBackwardInReview()
+        case kVK_ForwardDelete:
+            voiceInput.deleteForwardInReview()
+        default:
+            if !event.modifierFlags.intersection([.command, .control]).isEmpty {
+                return true
+            }
+            if voiceInput.isTypingEnglish {
+                if let characters = event.characters, !characters.isEmpty,
+                    characters.unicodeScalars.allSatisfy({
+                        !CharacterSet.controlCharacters.contains($0)
+                    })
+                {
+                    voiceInput.insert(typedText: characters)
+                }
+                return true
+            }
+            // Bopomofo: the key handler composes, and committed text is
+            // inserted into the result.
+            return false
+        }
+        return true
+    }
+
+    /// Clicking a character of the result being checked opens its candidates.
+    override func mouseDown(
+        onCharacterIndex index: Int, coordinate point: NSPoint, withModifier flags: Int,
+        continueTracking keepTracking: UnsafeMutablePointer<ObjCBool>!, client sender: Any!
+    ) -> Bool {
+        let voiceInput = VoiceInputController.shared
+        NSLog("McBopomofo voice input: mouse down on character %d", index)
+        guard McBopomofoInputMethodController.voiceInputController === self,
+            voiceInput.phase == .reviewing
+        else {
+            return false
+        }
+        voiceInput.openCandidates(at: index)
+        return true
     }
 
     /// Finishes a recording, first adding what is being composed.
@@ -565,13 +653,26 @@ extension McBopomofoInputMethodController {
     private var isTypingIntoVoiceInput: Bool {
         let voiceInput = VoiceInputController.shared
         return McBopomofoInputMethodController.voiceInputController === self
-            && voiceInput.phase == .recording && voiceInput.isToggleMode
+            && ((voiceInput.phase == .recording && voiceInput.isToggleMode)
+                || voiceInput.phase == .reviewing)
     }
 
     /// The voice input shown before the composing buffer while typing during
     /// a toggle-mode recording.
     private var voiceInputPrefix: String {
-        isTypingIntoVoiceInput ? VoiceInputController.shared.previewText : ""
+        voiceInputSurroundings.before
+    }
+
+    /// The voice input shown around the composing buffer.
+    private var voiceInputSurroundings: (before: String, after: String) {
+        guard isTypingIntoVoiceInput else {
+            return ("", "")
+        }
+        let voiceInput = VoiceInputController.shared
+        if voiceInput.phase == .reviewing {
+            return voiceInput.reviewSurroundings
+        }
+        return (voiceInput.previewText, "")
     }
 
     /// Sets the composing buffer as marked text, after the voice input in
@@ -579,8 +680,8 @@ extension McBopomofoInputMethodController {
     fileprivate func setComposingMarkedText(
         _ string: Any, selectionRange: NSRange, client: IMKTextInput
     ) {
-        let prefix = voiceInputPrefix
-        guard !prefix.isEmpty else {
+        let (prefix, suffix) = voiceInputSurroundings
+        guard !prefix.isEmpty || !suffix.isEmpty else {
             client.setMarkedText(
                 string, selectionRange: selectionRange,
                 replacementRange: NSMakeRange(NSNotFound, NSNotFound))
@@ -602,6 +703,12 @@ extension McBopomofoInputMethodController {
                         .markedClauseSegment: 1,
                     ]))
         }
+        text.append(
+            NSAttributedString(
+                string: suffix,
+                attributes: [
+                    .underlineStyle: NSUnderlineStyle.single.rawValue, .markedClauseSegment: 2,
+                ]))
         let offset = (prefix as NSString).length
         client.setMarkedText(
             text,
@@ -610,7 +717,7 @@ extension McBopomofoInputMethodController {
     }
 
     /// Shows the voice input in progress as marked text.
-    private func previewVoiceInput(_ text: String) {
+    private func previewVoiceInput(_ preview: VoiceInputController.Preview) {
         guard McBopomofoInputMethodController.voiceInputController === self,
             let client = currentClient as? IMKTextInput,
             state is InputState.Empty || state is InputState.EmptyIgnoringPreviousState
@@ -619,14 +726,24 @@ extension McBopomofoInputMethodController {
             // buffer.
             return
         }
-        let length = (text as NSString).length
-        let attributes: [NSAttributedString.Key: Any] = [
-            .underlineStyle: NSUnderlineStyle.single.rawValue,
-            .markedClauseSegment: 0,
-        ]
+        let text = NSMutableAttributedString(
+            string: preview.text,
+            attributes: [
+                .underlineStyle: NSUnderlineStyle.single.rawValue, .markedClauseSegment: 0,
+            ])
+        if let highlight = preview.highlight,
+            NSMaxRange(highlight) <= (preview.text as NSString).length
+        {
+            text.addAttributes(
+                [.underlineStyle: NSUnderlineStyle.thick.rawValue, .markedClauseSegment: 1],
+                range: highlight)
+            let after = NSMaxRange(highlight)
+            text.addAttribute(
+                .markedClauseSegment, value: 2,
+                range: NSRange(location: after, length: text.length - after))
+        }
         client.setMarkedText(
-            NSAttributedString(string: text, attributes: attributes),
-            selectionRange: NSMakeRange(length, 0),
+            text, selectionRange: NSMakeRange(preview.cursor, 0),
             replacementRange: NSMakeRange(NSNotFound, NSNotFound))
     }
 
@@ -720,7 +837,7 @@ extension McBopomofoInputMethodController {
         }
         // Text typed during a toggle-mode recording joins the voice input.
         if isTypingIntoVoiceInput {
-            VoiceInputController.shared.append(typedText: buffer)
+            VoiceInputController.shared.insert(typedText: buffer)
             return
         }
         (client as? IMKTextInput)?.insertText(

@@ -42,6 +42,18 @@ class VoiceInputController: NSObject {
         case idle
         case recording
         case processing
+        /// The result waits in the preview to be checked and corrected
+        /// before it is committed.
+        case reviewing
+    }
+
+    /// What to show while voice input is in progress.
+    struct Preview {
+        var text: String
+        /// The caret position, in UTF-16 units.
+        var cursor: Int
+        /// The word being corrected, if any.
+        var highlight: NSRange?
     }
 
     static let shared = VoiceInputController()
@@ -63,7 +75,7 @@ class VoiceInputController: NSObject {
     private var maxDurationTimer: Timer?
     private var task: Task<Void, Never>?
     private var appName: String?
-    private var preview: ((String) -> Void)?
+    private var preview: ((Preview) -> Void)?
     private var completion: ((String) -> Void)?
     /// The text currently shown in the preview.
     private(set) var previewText = ""
@@ -112,7 +124,7 @@ class VoiceInputController: NSObject {
     ///     talking and polishing; an empty string clears the preview.
     ///   - completion: Called on the main thread with the final text.
     func start(
-        client: IMKTextInput, toggleMode: Bool = false, preview: @escaping (String) -> Void,
+        client: IMKTextInput, toggleMode: Bool = false, preview: @escaping (Preview) -> Void,
         completion: @escaping (String) -> Void
     ) {
         guard phase == .idle else {
@@ -415,11 +427,60 @@ class VoiceInputController: NSObject {
 
     /// Switches typing in toggle mode between Bopomofo and English.
     func toggleTypingLanguage() {
-        guard phase == .recording, isToggleMode else {
+        guard (phase == .recording && isToggleMode) || phase == .reviewing else {
             return
         }
         isTypingEnglish.toggle()
-        showRecordingStatus()
+        if phase == .reviewing {
+            showReview()
+        } else {
+            showRecordingStatus()
+        }
+    }
+
+    /// Adds typed text: into the recording, or at the insertion point while
+    /// checking the result.
+    func insert(typedText text: String) {
+        if phase == .reviewing {
+            insertInReview(text)
+        } else {
+            append(typedText: text)
+        }
+    }
+
+    /// Where typed text goes while checking: before the selection, like a
+    /// block cursor, or at the cursor.
+    var reviewInsertionPoint: Int {
+        selection?.location ?? reviewCursor
+    }
+
+    /// The text before and after the insertion point while checking, shown
+    /// around the composing buffer.
+    var reviewSurroundings: (before: String, after: String) {
+        let point = min(reviewInsertionPoint, reviewText.length)
+        return (
+            reviewText.substring(to: point),
+            reviewText.substring(from: point)
+        )
+    }
+
+    private func insertInReview(_ text: String) {
+        guard phase == .reviewing, !text.isEmpty else {
+            return
+        }
+        let point = reviewInsertionPoint
+        let length = (text as NSString).length
+        reviewText = reviewText.replacingCharacters(
+            in: NSRange(location: point, length: 0), with: text) as NSString
+        if let current = selection {
+            selection = NSRange(location: current.location + length, length: current.length)
+            reviewCursor = NSMaxRange(selection!)
+        } else {
+            reviewCursor = point + length
+        }
+        candidateRange = nil
+        candidates = []
+        showReview()
     }
 
     /// Ends the current audio item: transcribed if it has speech, dropped
@@ -506,19 +567,275 @@ class VoiceInputController: NSObject {
             return
         }
         previewText = text
-        preview?(text)
+        preview?(Preview(text: text, cursor: (text as NSString).length))
     }
 
     private func finish(with text: String) {
-        let completion = completion
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
+        if !trimmed.isEmpty && Preferences.voiceInputReview {
+            startReview(trimmed)
+            return
+        }
+        commit(trimmed)
+    }
+
+    private func commit(_ text: String) {
+        let completion = completion
+        if text.isEmpty {
             show(preview: "")
         }
         reset()
-        if !trimmed.isEmpty {
-            completion?(trimmed)
+        if !text.isEmpty {
+            completion?(text)
         }
+    }
+
+    // MARK: - Review
+
+    private var reviewText: NSString = ""
+    private var reviewCursor = 0
+    private var candidateRange: NSRange?
+    private(set) var candidates: [String] = []
+    /// The part being looked at, moved with ←→ and narrowed with ↓.
+    private var selection: NSRange?
+    private let maximumCandidates = 9
+
+    private func startReview(_ text: String) {
+        // Recognition is over; the server would close idle sessions anyway.
+        capture?.stop()
+        capture = nil
+        transcriber?.close()
+        transcriber = nil
+        previewTranscriber?.close()
+        previewTranscriber = nil
+        maxDurationTimer?.invalidate()
+        maxDurationTimer = nil
+        task = nil
+        selection = nil
+        reviewText = text as NSString
+        reviewCursor = reviewText.length
+        candidateRange = nil
+        candidates = []
+        phase = .reviewing
+        showReview()
+    }
+
+    private func showReview() {
+        previewText = reviewText as String
+        preview?(
+            Preview(text: previewText, cursor: reviewCursor, highlight: candidateRange ?? selection))
+        // Many apps (e.g. terminals) draw marked text with a plain underline
+        // only, so show the selection in the status too.
+        let context = (candidateRange ?? selection).map { Self.context(of: $0, in: reviewText) }
+        let typing = isTypingEnglish
+            ? NSLocalizedString("Typing: English (Left Option to switch)", comment: "")
+            : NSLocalizedString("Typing: Bopomofo (Left Option to switch)", comment: "")
+        if candidates.isEmpty {
+            showStatus(
+                (context.map { $0 + "\n" } ?? "") + typing + "\n"
+                    + NSLocalizedString(
+                    "Check: Enter to commit, ←→ to move, ↓ to narrow, ↑ for candidates, Esc to cancel",
+                    comment: ""))
+        } else {
+            let list = candidates.prefix(maximumCandidates).enumerated()
+                .map { "\($0.offset + 1) \($0.element)" }.joined(separator: "　")
+            showStatus(
+                (context.map { $0 + "\n" } ?? "") + list + "\n"
+                    + NSLocalizedString("Number to choose, Esc to close", comment: ""))
+        }
+    }
+
+    /// The range in brackets, with a few characters around it.
+    private static func context(of range: NSRange, in text: NSString) -> String {
+        let reach = 8
+        let start = max(0, range.location - reach)
+        let end = min(text.length, NSMaxRange(range) + reach)
+        let before = text.substring(with: NSRange(location: start, length: range.location - start))
+        let after = text.substring(
+            with: NSRange(location: NSMaxRange(range), length: end - NSMaxRange(range)))
+        return (start > 0 ? "…" : "") + before + "【" + text.substring(with: range) + "】"
+            + after + (end < text.length ? "…" : "")
+    }
+
+    /// Commits the checked text.
+    func commitReview() {
+        guard phase == .reviewing else {
+            return
+        }
+        commit(reviewText as String)
+    }
+
+    /// Moves the selection by its own width. The first move selects the
+    /// first (or, moving left, the last) quarter of the text.
+    func moveSelection(toRight: Bool) {
+        guard phase == .reviewing, reviewText.length > 0 else {
+            return
+        }
+        guard let current = selection else {
+            let width = max(1, reviewText.length / 4)
+            select(
+                NSRange(
+                    location: toRight ? 0 : reviewText.length - width, length: width))
+            return
+        }
+        shiftSelection(by: toRight ? current.length : -current.length)
+    }
+
+    /// Halves the selection around its middle, down to one character.
+    func narrowSelection() {
+        guard phase == .reviewing, reviewText.length > 0 else {
+            return
+        }
+        guard let current = selection else {
+            moveSelection(toRight: true)
+            return
+        }
+        guard current.length > 1 else {
+            return
+        }
+        let width = current.length / 2
+        let location = current.location + (current.length - width) / 2
+        select(NSRange(location: location, length: width))
+    }
+
+    /// Moves the selection by some characters, keeping its width.
+    func shiftSelection(by offset: Int) {
+        guard phase == .reviewing, let current = selection else {
+            return
+        }
+        let location = min(max(current.location + offset, 0), reviewText.length - current.length)
+        select(NSRange(location: location, length: current.length))
+    }
+
+    /// Opens candidates for the selection, or for the word before the cursor.
+    func openSelectionCandidates() {
+        guard phase == .reviewing else {
+            return
+        }
+        if let selection = selection {
+            openCandidates(in: selection)
+        } else {
+            openCandidates()
+        }
+    }
+
+    private func select(_ range: NSRange) {
+        selection = range
+        reviewCursor = NSMaxRange(range)
+        closeCandidates()
+    }
+
+    /// Opens candidates for the range: the phrase itself if it has
+    /// homophones, otherwise the word around its middle.
+    private func openCandidates(in range: NSRange) {
+        let phrase = reviewText.substring(with: range)
+        if phrase.unicodeScalars.allSatisfy({ $0.properties.isIdeographic }) {
+            let homophones = LanguageModelManager.homophones(for: phrase)
+            if homophones.count > 1 {
+                candidateRange = range
+                candidates = homophones
+                showReview()
+                return
+            }
+        }
+        guard let (wordRange, homophones) = Self.word(
+                in: reviewText, containing: range.location + range.length / 2)
+        else {
+            closeCandidates()
+            return
+        }
+        candidateRange = wordRange
+        candidates = homophones
+        showReview()
+    }
+
+    /// Deletes the character before the selection (like a block cursor), or
+    /// before the cursor.
+    func deleteBackwardInReview() {
+        guard phase == .reviewing else {
+            return
+        }
+        let point = reviewInsertionPoint
+        guard point > 0 else {
+            return
+        }
+        let range = reviewText.rangeOfComposedCharacterSequence(at: point - 1)
+        reviewText = reviewText.replacingCharacters(in: range, with: "") as NSString
+        if let current = selection {
+            selection = NSRange(location: current.location - range.length, length: current.length)
+            reviewCursor = NSMaxRange(selection!)
+        } else {
+            reviewCursor = range.location
+        }
+        closeCandidates()
+    }
+
+    /// Deletes the selected characters.
+    func deleteForwardInReview() {
+        guard phase == .reviewing, let range = selection else {
+            return
+        }
+        reviewText = reviewText.replacingCharacters(in: range, with: "") as NSString
+        reviewCursor = range.location
+        selection = reviewText.length > range.location
+            ? reviewText.rangeOfComposedCharacterSequence(at: range.location) : nil
+        closeCandidates()
+    }
+
+    /// Opens the candidates for the word at the given index, or before the
+    /// cursor.
+    func openCandidates(at index: Int? = nil) {
+        guard phase == .reviewing, reviewText.length > 0 else {
+            return
+        }
+        let target = min(max(index ?? reviewCursor - 1, 0), reviewText.length - 1)
+        if let index = index {
+            reviewCursor = min(index + 1, reviewText.length)
+        }
+        guard let (range, homophones) = Self.word(in: reviewText, containing: target) else {
+            closeCandidates()
+            return
+        }
+        candidateRange = range
+        candidates = homophones
+        showReview()
+    }
+
+    func closeCandidates() {
+        candidateRange = nil
+        candidates = []
+        showReview()
+    }
+
+    func chooseCandidate(at index: Int) {
+        guard phase == .reviewing, let range = candidateRange, index < candidates.count else {
+            return
+        }
+        let candidate = candidates[index]
+        reviewText = reviewText.replacingCharacters(in: range, with: candidate) as NSString
+        reviewCursor = range.location + (candidate as NSString).length
+        selection = nil
+        closeCandidates()
+    }
+
+    /// Finds the longest phrase covering the index that has homophones in the
+    /// language model.
+    private static func word(in text: NSString, containing index: Int) -> (NSRange, [String])? {
+        for length in stride(from: 4, through: 1, by: -1) {
+            for start in stride(from: index, through: max(0, index - length + 1), by: -1)
+            where start + length <= text.length {
+                let range = NSRange(location: start, length: length)
+                let phrase = text.substring(with: range)
+                guard phrase.unicodeScalars.allSatisfy({ $0.properties.isIdeographic }) else {
+                    continue
+                }
+                let homophones = LanguageModelManager.homophones(for: phrase)
+                if homophones.count > 1 {
+                    return (range, homophones)
+                }
+            }
+        }
+        return nil
     }
 
     private func fail(with error: Error) {
@@ -527,11 +844,17 @@ class VoiceInputController: NSObject {
         }
         NSLog("McBopomofo voice input: \(error)")
         task?.cancel()
-        show(preview: "")
-        reset()
         NotifierController.notify(
             message: NSLocalizedString("Voice input failed: ", comment: "")
                 + error.localizedDescription, stay: true)
+        // Keep what was recognized so far, to be checked and committed.
+        let recognized = previewText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if phase != .reviewing && !recognized.isEmpty {
+            startReview(recognized)
+            return
+        }
+        show(preview: "")
+        reset()
     }
 
     private func reset() {
@@ -558,6 +881,11 @@ class VoiceInputController: NSObject {
         preview = nil
         completion = nil
         previewText = ""
+        reviewText = ""
+        reviewCursor = 0
+        selection = nil
+        candidateRange = nil
+        candidates = []
         phase = .idle
         tooltip.hide()
     }
@@ -800,8 +1128,9 @@ private protocol StreamingTranscriber: AnyObject {
     func close()
 }
 
-/// The minimum audio worth committing: 100 ms of 16-bit PCM.
-private let minimumCommitBytes = Int(AudioCapture.sampleRate) / 10 * 2
+/// The minimum audio to commit: ElevenLabs closes the session on commits of
+/// less than 0.3 s.
+private let minimumCommitBytes = Int(AudioCapture.sampleRate * 0.35) * 2
 
 /// Saves audio items for debugging.
 private struct DebugAudioRecorder {
@@ -896,7 +1225,8 @@ private class ElevenLabsTranscriber: StreamingTranscriber {
     func clear() {
         debugRecorder.saveCleared()
         partialTranscript = ""
-        if uncommittedBytes > 0 || !autoCommittedText.isEmpty {
+        // Too little audio to commit stays and joins the next item.
+        if uncommittedBytes >= minimumCommitBytes || !autoCommittedText.isEmpty {
             pendingCommits.append(false)
             uncommittedBytes = 0
             send(audio: Data(), commit: true)

@@ -272,5 +272,7 @@
 "Polish level %d %@ (↑↓ to adjust)" = "Polish level %d %@ (↑↓ to adjust)";
 "Typing: English (Left Option to switch)" = "Typing: English (Left Option to switch)";
 "Typing: Bopomofo (Left Option to switch)" = "Typing: Bopomofo (Left Option to switch)";
+"Check: Enter to commit, ←→ to move, ↓ to narrow, ↑ for candidates, Esc to cancel" = "Check: Enter to commit, ←→ to move, ↓ to narrow, ↑ for candidates, Esc to cancel";
+"Number to choose, Esc to close" = "Number to choose, Esc to close";
 "Voice input failed: " = "Voice input failed: ";
 "Voice input copied to the clipboard" = "Voice input copied to the clipboard";

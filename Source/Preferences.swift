@@ -66,6 +66,7 @@ private let kVoiceInputLLMModelKey = "VoiceInputLLMModel"
 private let kVoiceInputPreviewModelKey = "VoiceInputPreviewModel"
 private let kVoiceInputPolishLevelKey = "VoiceInputPolishLevel"
 private let kVoiceInputDebugKey = "VoiceInputDebug"
+private let kVoiceInputReviewKey = "VoiceInputReview"
 private let kUseCustomUserPhraseLocation = "UseCustomUserPhraseLocation"
 private let kCustomUserPhraseLocation = "CustomUserPhraseLocation"
 
@@ -260,6 +261,7 @@ class Preferences: NSObject {
             kVoiceInputPreviewModelKey,
             kVoiceInputPolishLevelKey,
             kVoiceInputDebugKey,
+            kVoiceInputReviewKey,
         ]
     }
 
@@ -573,6 +575,11 @@ extension Preferences {
     /// under the user data folder, for debugging.
     @UserDefault(key: kVoiceInputDebugKey, defaultValue: false)
     static var voiceInputDebug: Bool
+
+    /// Keeps the result in the preview to be checked and corrected (e.g.
+    /// homophones) before committing it.
+    @UserDefault(key: kVoiceInputReviewKey, defaultValue: true)
+    static var voiceInputReview: Bool
 }
 
 @objc class UserPhraseLocationHelper: NSObject {
