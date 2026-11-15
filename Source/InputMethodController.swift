@@ -534,7 +534,7 @@ extension McBopomofoInputMethodController {
             return true
         }
         if keyCode == kVK_Delete {
-            voiceInput.deleteBackwardTypedText()
+            voiceInput.deleteBackward()
             return true
         }
         if !event.modifierFlags.intersection([.command, .control]).isEmpty {

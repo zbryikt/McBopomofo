@@ -75,6 +75,8 @@ class VoiceInputController: NSObject {
         case typed(String)
     }
     private var segments: [Segment] = []
+    /// Characters deleted from the end of each audio item's transcript.
+    private var audioTrims: [Int: Int] = [:]
     private var committedAudioItems = 0
     private var previewItems: [String] = []
     private var debugDirectory: URL?
@@ -153,7 +155,7 @@ class VoiceInputController: NSObject {
                     guard let self = self, self.phase == .recording else {
                         return
                     }
-                    self.previewItems = items.map(Self.toTraditional)
+                    self.previewItems = items.map(Self.cleanTranscript)
                     self.showComposedPreview()
                 }
                 self.transcriber = transcriber
@@ -186,7 +188,7 @@ class VoiceInputController: NSObject {
                     guard let self = self, self.phase == .recording else {
                         return
                     }
-                    self.previewItems = items.map(Self.toTraditional)
+                    self.previewItems = items.map(Self.cleanTranscript)
                     self.showComposedPreview()
                 }
                 self.transcriber = transcriber
@@ -289,6 +291,7 @@ class VoiceInputController: NSObject {
         let previewTranscriber = previewTranscriber
         let audio = recordedAudio
         let segments = segments
+        let trims = audioTrims
         task = Task { @MainActor [weak self] in
             do {
                 var items: [String] = []
@@ -296,7 +299,7 @@ class VoiceInputController: NSObject {
                     // Only typed text.
                 } else if let transcriber = transcriber {
                     async let previews = try? previewTranscriber?.finish()
-                    items = try await transcriber.finish().map(Self.toTraditional)
+                    items = try await transcriber.finish().map(Self.cleanTranscript)
                     // The final model makes up text for audio without speech
                     // (e.g. key clicks), while the preview model returns
                     // nothing for it: drop what only the final model heard.
@@ -322,19 +325,19 @@ class VoiceInputController: NSObject {
                     }
                     let record: [String: Any] = [
                         "items": items, "preview": self?.previewItems ?? [], "typed": typed,
-                        "composed": Self.compose(segments: segments, items: items, tagTyped: true),
+                        "composed": Self.compose(segments: segments, items: items, trims: trims, tagTyped: true),
                     ]
                     try? JSONSerialization.data(withJSONObject: record, options: .prettyPrinted)
                         .write(to: directory.appendingPathComponent("transcripts.json"))
                 }
-                let transcript = Self.compose(segments: segments, items: items, tagTyped: false)
+                let transcript = Self.compose(segments: segments, items: items, trims: trims, tagTyped: false)
                 self?.show(preview: transcript)
                 var text = transcript
                 let level = Preferences.voiceInputPolishLevel
                 if !Preferences.voiceInputLLMModel.isEmpty && level > 0 && !transcript.isEmpty {
                     self?.showStatus(NSLocalizedString("Polishing... (Enter to skip)", comment: ""))
                     text = try await Self.refine(
-                        transcript: Self.compose(segments: segments, items: items, tagTyped: true),
+                        transcript: Self.compose(segments: segments, items: items, trims: trims, tagTyped: true),
                         level: level, appName: appName
                     ) { partial in
                         self?.show(preview: partial)
@@ -379,16 +382,33 @@ class VoiceInputController: NSObject {
         showComposedPreview()
     }
 
-    /// Deletes the last typed character, if the text ends with typed text.
-    func deleteBackwardTypedText() {
-        guard phase == .recording, case .typed(let previous)? = segments.last else {
+    /// Deletes the last character of the voice input so far, whether typed
+    /// or spoken.
+    func deleteBackward() {
+        guard phase == .recording else {
             return
         }
-        let remaining = String(previous.dropLast())
-        if remaining.isEmpty {
-            segments.removeLast()
-        } else {
-            segments[segments.count - 1] = .typed(remaining)
+        // Settle what is being said into an item so that it can be edited.
+        if transcriber?.uncommittedBytes ?? 0 > 0 {
+            splitAudio()
+        }
+        for index in segments.indices.reversed() {
+            switch segments[index] {
+            case .typed(let typed):
+                if typed.count > 1 {
+                    segments[index] = .typed(String(typed.dropLast()))
+                } else {
+                    segments.remove(at: index)
+                }
+            case .audio(let item):
+                let trim = audioTrims[item, default: 0]
+                guard item < previewItems.count, previewItems[item].count > trim else {
+                    // Nothing left of this item; delete from the one before.
+                    continue
+                }
+                audioTrims[item] = trim + 1
+            }
+            break
         }
         showComposedPreview()
     }
@@ -431,18 +451,23 @@ class VoiceInputController: NSObject {
     }
 
     private func showComposedPreview() {
-        show(preview: Self.compose(segments: segments, items: previewItems, tagTyped: false))
+        show(preview: Self.compose(
+            segments: segments, items: previewItems, trims: audioTrims, tagTyped: false))
     }
 
     /// Joins audio transcripts and typed text in order. Items after the last
     /// segment (the audio still being recorded) go at the end.
-    private static func compose(segments: [Segment], items: [String], tagTyped: Bool) -> String {
+    private static func compose(
+        segments: [Segment], items: [String], trims: [Int: Int], tagTyped: Bool
+    ) -> String {
         var text = ""
         var nextItem = 0
         for segment in segments {
             switch segment {
             case .audio(let index):
-                text += index < items.count ? items[index] : ""
+                if index < items.count {
+                    text += items[index].dropLast(trims[index, default: 0])
+                }
                 nextItem = index + 1
             case .typed(let typed):
                 text += tagTyped ? "<typed>\(typed)</typed>" : typed
@@ -521,6 +546,7 @@ class VoiceInputController: NSObject {
         isToggleMode = false
         isTypingEnglish = false
         segments = []
+        audioTrims = [:]
         committedAudioItems = 0
         previewItems = []
         lastTypedTime = .distantPast
@@ -559,6 +585,22 @@ class VoiceInputController: NSObject {
 
     private func showStatus(_ message: String) {
         tooltip.show(tooltip: message, at: tooltipOrigin)
+    }
+
+    /// Converts a transcript to Taiwanese Traditional Chinese and removes
+    /// artifacts of splitting the audio: the dashes marking a cut, and items
+    /// with nothing but filler sounds (often noise heard as 嗯).
+    private static func cleanTranscript(_ text: String) -> String {
+        let cleaned = toTraditional(text)
+            .replacingOccurrences(of: "—", with: "")
+            // Pauses, as transcribed by ElevenLabs.
+            .replacingOccurrences(of: "\\.{3,}|…+", with: "", options: .regularExpression)
+        let fillers = CharacterSet(charactersIn: "嗯呃啊欸唔哦喔")
+            .union(.punctuationCharacters).union(.whitespacesAndNewlines)
+        if cleaned.unicodeScalars.allSatisfy({ fillers.contains($0) }) {
+            return ""
+        }
+        return cleaned
     }
 
     /// Whether a transcript has no words, only punctuation and spaces.
@@ -811,6 +853,10 @@ private class ElevenLabsTranscriber: StreamingTranscriber {
     /// Whether each commit awaiting its transcript is kept, in commit order.
     private var pendingCommits: [Bool] = []
     private var partialTranscript = ""
+    /// Segments the server committed on its own (it does so on long speech,
+    /// even with manual commits) since our last commit. They belong to the
+    /// current item.
+    private var autoCommittedText = ""
     private var finishContinuation: CheckedContinuation<[String], Error>?
     private var closed = false
     private var debugRecorder = DebugAudioRecorder()
@@ -850,7 +896,7 @@ private class ElevenLabsTranscriber: StreamingTranscriber {
     func clear() {
         debugRecorder.saveCleared()
         partialTranscript = ""
-        if uncommittedBytes > 0 {
+        if uncommittedBytes > 0 || !autoCommittedText.isEmpty {
             pendingCommits.append(false)
             uncommittedBytes = 0
             send(audio: Data(), commit: true)
@@ -952,15 +998,20 @@ private class ElevenLabsTranscriber: StreamingTranscriber {
             break
         case "partial_transcript":
             partialTranscript = event["text"] as? String ?? ""
-            onUpdate?(transcripts + [partialTranscript])
+            onUpdate?(transcripts + [autoCommittedText + partialTranscript])
         case "committed_transcript":
-            guard !pendingCommits.isEmpty else {
+            let text = autoCommittedText + (event["text"] as? String ?? "")
+            partialTranscript = ""
+            if pendingCommits.isEmpty {
+                // Committed by the server, not in answer to our commit.
+                autoCommittedText = text
+                onUpdate?(transcripts + [autoCommittedText])
                 return
             }
+            autoCommittedText = ""
             if pendingCommits.removeFirst() {
-                transcripts.append(event["text"] as? String ?? "")
+                transcripts.append(text)
             }
-            partialTranscript = ""
             onUpdate?(transcripts)
             resolveIfDone()
         default:
