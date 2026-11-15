@@ -67,6 +67,7 @@ private let kVoiceInputPreviewModelKey = "VoiceInputPreviewModel"
 private let kVoiceInputPolishLevelKey = "VoiceInputPolishLevel"
 private let kVoiceInputDebugKey = "VoiceInputDebug"
 private let kVoiceInputReviewKey = "VoiceInputReview"
+private let kVoiceInputPanelKey = "VoiceInputPanel"
 private let kUseCustomUserPhraseLocation = "UseCustomUserPhraseLocation"
 private let kCustomUserPhraseLocation = "CustomUserPhraseLocation"
 
@@ -262,6 +263,7 @@ class Preferences: NSObject {
             kVoiceInputPolishLevelKey,
             kVoiceInputDebugKey,
             kVoiceInputReviewKey,
+            kVoiceInputPanelKey,
         ]
     }
 
@@ -580,6 +582,11 @@ extension Preferences {
     /// homophones) before committing it.
     @UserDefault(key: kVoiceInputReviewKey, defaultValue: true)
     static var voiceInputReview: Bool
+
+    /// Shows voice input in a floating panel below the cursor instead of as
+    /// marked text with a tooltip.
+    @UserDefault(key: kVoiceInputPanelKey, defaultValue: true)
+    static var voiceInputPanel: Bool
 }
 
 @objc class UserPhraseLocationHelper: NSObject {

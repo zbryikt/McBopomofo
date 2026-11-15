@@ -270,7 +270,14 @@
 "Polish level %d %@ (↑↓ to adjust)" = "潤飾強度 %d %@（↑↓ 調整）";
 "Typing: English (Left Option to switch)" = "打字：英文（左 Option 切換）";
 "Typing: Bopomofo (Left Option to switch)" = "打字：注音（左 Option 切換）";
-"Check: Enter to commit, ←→ to move, ↓ to narrow, ↑ for candidates, Esc to cancel" = "檢查：Enter 送出・←→ 移動・↓ 縮小範圍・↑ 選字・⌘←→ 微調・Esc 取消";
+"Check: Enter to commit, ←→ to move, ↓ to narrow, ↑ for candidates, Esc to cancel" = "檢查：Enter 送出・←→ 移動・↓ 縮小・↑ 放大・⇧←→ 逐字調整範圍・⌘←→ 微調・右 Option 選字・Esc 取消";
 "Number to choose, Esc to close" = "按數字選字，Esc 關閉";
+"English" = "英文";
+"Bopomofo" = "注音";
+"Polish %d" = "潤飾 %d";
+"Recording" = "錄音中";
+"Check" = "檢查";
+"Suggesting..." = "建議中…";
+"No suggestions for the selection" = "這段沒有建議";
 "Voice input failed: " = "語音輸入失敗：";
 "Voice input copied to the clipboard" = "語音輸入結果已複製到剪貼簿";

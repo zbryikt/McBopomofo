@@ -41,7 +41,8 @@ NS_ASSUME_NONNULL_BEGIN
 + (nullable NSString *)readingFor:(NSString *)phrase;
 
 /// Phrases with the same reading as the given phrase, most likely first,
-/// including the phrase itself. Empty if the phrase is not in the model.
+/// including the phrase itself. A phrase not in the model takes the readings
+/// of its characters; empty if a character has no reading.
 + (NSArray<NSString *> *)homophonesFor:(NSString *)phrase NS_SWIFT_NAME(homophones(for:));
 
 @property (class, readonly, nonatomic) NSString *dataFolderPath;

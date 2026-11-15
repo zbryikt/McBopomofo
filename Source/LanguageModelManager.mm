@@ -494,9 +494,25 @@ static void LTLoadVariantAnnotatorData()
 
 + (NSArray<NSString *> *)homophonesFor:(NSString *)phrase
 {
+    // A phrase not in the model (e.g. a misrecognized one) takes the readings
+    // of its characters.
     NSString *reading = [self readingFor:phrase];
     if (!reading) {
-        return @[];
+        NSMutableArray<NSString *> *readings = [NSMutableArray array];
+        __block BOOL complete = YES;
+        [phrase enumerateSubstringsInRange:NSMakeRange(0, phrase.length) options:NSStringEnumerationByComposedCharacterSequences usingBlock:^(NSString *character, NSRange range, NSRange enclosingRange, BOOL *stop) {
+            NSString *characterReading = [self readingFor:character];
+            if (!characterReading) {
+                complete = NO;
+                *stop = YES;
+                return;
+            }
+            [readings addObject:characterReading];
+        }];
+        if (!complete || readings.count == 0) {
+            return @[];
+        }
+        reading = [readings componentsJoinedByString:@"-"];
     }
     auto unigrams = gLanguageModelMcBopomofo.getUnigrams(reading.UTF8String);
     std::stable_sort(unigrams.begin(), unigrams.end(), [](const auto &a, const auto &b) {

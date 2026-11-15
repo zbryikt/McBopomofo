@@ -64,6 +64,13 @@ class VoiceInputController: NSObject {
     private(set) var isToggleMode = false
 
     private let tooltip = TooltipController()
+    private let panel = VoicePanel()
+    /// The transcript being polished, to show the changes against.
+    private var polishSource: String?
+
+    /// Whether voice input is shown in a floating panel rather than as marked
+    /// text and a tooltip.
+    var usesPanel: Bool { Preferences.voiceInputPanel }
     private var tooltipOrigin = NSPoint.zero
     private var capture: AudioCapture?
     /// Produces the final transcript.
@@ -280,9 +287,10 @@ class VoiceInputController: NSObject {
         NSLog("McBopomofo voice input: voiced %.1fs, noise floor %.1f dB, %d audio items",
             capture.voicedDuration, capture.noiseFloor,
             committedAudioItems)
-        if (capture.peakPower < silenceThreshold || capture.voicedDuration < minimumVoicedDuration)
-            && !hasTypedText
-        {
+        let ignoresNonSpeech = transcriber?.ignoresNonSpeech ?? false
+        let isSilent = capture.peakPower < silenceThreshold
+            || (!ignoresNonSpeech && capture.voicedDuration < minimumVoicedDuration)
+        if isSilent && !hasTypedText {
             cancel()
             NotifierController.notify(
                 message: NSLocalizedString(
@@ -294,8 +302,6 @@ class VoiceInputController: NSObject {
         phase = .processing
         showStatus(NSLocalizedString("Recognizing...", comment: ""))
 
-        let isSilent =
-            capture.peakPower < silenceThreshold || capture.voicedDuration < minimumVoicedDuration
         splitAudio()
 
         let appName = appName
@@ -347,6 +353,7 @@ class VoiceInputController: NSObject {
                 var text = transcript
                 let level = Preferences.voiceInputPolishLevel
                 if !Preferences.voiceInputLLMModel.isEmpty && level > 0 && !transcript.isEmpty {
+                    self?.polishSource = transcript
                     self?.showStatus(NSLocalizedString("Polishing... (Enter to skip)", comment: ""))
                     text = try await Self.refine(
                         transcript: Self.compose(segments: segments, items: items, trims: trims, tagTyped: true),
@@ -470,6 +477,7 @@ class VoiceInputController: NSObject {
         }
         let point = reviewInsertionPoint
         let length = (text as NSString).length
+        recordUndo()
         reviewText = reviewText.replacingCharacters(
             in: NSRange(location: point, length: 0), with: text) as NSString
         if let current = selection {
@@ -490,17 +498,19 @@ class VoiceInputController: NSObject {
             return
         }
         NSLog("McBopomofo voice input: split with %.2fs of speech", voicedSinceSplit)
-        if voicedSinceSplit >= minimumVoicedDuration
-            && transcriber.uncommittedBytes >= minimumCommitBytes
-        {
+        // Our speech detection is rough (it fails in noisy rooms), so it only
+        // guards services that make up text for non-speech.
+        let hasSpeech = transcriber.ignoresNonSpeech || voicedSinceSplit >= minimumVoicedDuration
+        if hasSpeech && transcriber.uncommittedBytes >= minimumCommitBytes {
             transcriber.commit()
             previewTranscriber?.commit()
             segments.append(.audio(committedAudioItems))
             committedAudioItems += 1
-        } else {
+        } else if !hasSpeech {
             transcriber.clear()
             previewTranscriber?.clear()
         }
+        // Otherwise, too little audio to commit: it joins the next item.
         voicedSinceSplit = 0
     }
 
@@ -567,7 +577,11 @@ class VoiceInputController: NSObject {
             return
         }
         previewText = text
-        preview?(Preview(text: text, cursor: (text as NSString).length))
+        if usesPanel {
+            renderPanel()
+        } else {
+            preview?(Preview(text: text, cursor: (text as NSString).length))
+        }
     }
 
     private func finish(with text: String) {
@@ -598,6 +612,50 @@ class VoiceInputController: NSObject {
     private(set) var candidates: [String] = []
     /// The part being looked at, moved with ←→ and narrowed with ↓.
     private var selection: NSRange?
+    /// Whether the LLM is being asked for candidates.
+    private var isSuggesting = false
+    /// Edits while checking, for undo and redo.
+    private struct ReviewSnapshot {
+        var text: NSString
+        var selection: NSRange?
+        var cursor: Int
+    }
+    private var undoStack: [ReviewSnapshot] = []
+    private var redoStack: [ReviewSnapshot] = []
+
+    private var reviewSnapshot: ReviewSnapshot {
+        ReviewSnapshot(text: reviewText, selection: selection, cursor: reviewCursor)
+    }
+
+    /// Saves the state before an edit.
+    private func recordUndo() {
+        undoStack.append(reviewSnapshot)
+        redoStack.removeAll()
+    }
+
+    private func restore(_ snapshot: ReviewSnapshot) {
+        reviewText = snapshot.text
+        selection = snapshot.selection
+        reviewCursor = snapshot.cursor
+        closeCandidates()
+    }
+
+    func undoReview() {
+        guard phase == .reviewing, let snapshot = undoStack.popLast() else {
+            return
+        }
+        redoStack.append(reviewSnapshot)
+        restore(snapshot)
+    }
+
+    func redoReview() {
+        guard phase == .reviewing, let snapshot = redoStack.popLast() else {
+            return
+        }
+        undoStack.append(reviewSnapshot)
+        restore(snapshot)
+    }
+    private var suggestionTask: Task<Void, Never>?
     private let maximumCandidates = 9
 
     private func startReview(_ text: String) {
@@ -611,6 +669,9 @@ class VoiceInputController: NSObject {
         maxDurationTimer?.invalidate()
         maxDurationTimer = nil
         task = nil
+        polishSource = nil
+        undoStack = []
+        redoStack = []
         selection = nil
         reviewText = text as NSString
         reviewCursor = reviewText.length
@@ -622,6 +683,10 @@ class VoiceInputController: NSObject {
 
     private func showReview() {
         previewText = reviewText as String
+        if usesPanel {
+            renderPanel()
+            return
+        }
         preview?(
             Preview(text: previewText, cursor: reviewCursor, highlight: candidateRange ?? selection))
         // Many apps (e.g. terminals) draw marked text with a plain underline
@@ -681,6 +746,21 @@ class VoiceInputController: NSObject {
         shiftSelection(by: toRight ? current.length : -current.length)
     }
 
+    /// Doubles the selection around its middle, up to the whole text.
+    func widenSelection() {
+        guard phase == .reviewing, reviewText.length > 0 else {
+            return
+        }
+        guard let current = selection else {
+            moveSelection(toRight: true)
+            return
+        }
+        let width = min(current.length * 2, reviewText.length)
+        let location = min(
+            max(current.location - (width - current.length) / 2, 0), reviewText.length - width)
+        select(NSRange(location: location, length: width))
+    }
+
     /// Halves the selection around its middle, down to one character.
     func narrowSelection() {
         guard phase == .reviewing, reviewText.length > 0 else {
@@ -738,15 +818,44 @@ class VoiceInputController: NSObject {
                 return
             }
         }
-        guard let (wordRange, homophones) = Self.word(
-                in: reviewText, containing: range.location + range.length / 2)
-        else {
-            closeCandidates()
+        // No homophones (e.g. a long or mixed selection): ask the LLM.
+        candidateRange = range
+        candidates = []
+        isSuggesting = true
+        showReview()
+        let text = reviewText as String
+        suggestionTask?.cancel()
+        suggestionTask = Task { @MainActor [weak self] in
+            let suggestions = (try? await Self.suggest(replacing: range, in: text)) ?? []
+            guard let self = self, !Task.isCancelled, self.phase == .reviewing,
+                self.candidateRange == range, self.reviewText as String == text
+            else {
+                return
+            }
+            self.isSuggesting = false
+            if suggestions.isEmpty {
+                NotifierController.notify(
+                    message: NSLocalizedString("No suggestions for the selection", comment: ""))
+                self.closeCandidates()
+            } else {
+                self.candidates = [phrase] + suggestions.filter { $0 != phrase }
+                self.showReview()
+            }
+        }
+    }
+
+    /// Grows or shrinks the selection by characters at its end, starting
+    /// from the last character.
+    func adjustSelectionLength(by delta: Int) {
+        guard phase == .reviewing, reviewText.length > 0 else {
             return
         }
-        candidateRange = wordRange
-        candidates = homophones
-        showReview()
+        guard let current = selection else {
+            select(NSRange(location: reviewText.length - 1, length: 1))
+            return
+        }
+        let length = min(max(current.length + delta, 1), reviewText.length - current.location)
+        select(NSRange(location: current.location, length: length))
     }
 
     /// Deletes the character before the selection (like a block cursor), or
@@ -760,6 +869,7 @@ class VoiceInputController: NSObject {
             return
         }
         let range = reviewText.rangeOfComposedCharacterSequence(at: point - 1)
+        recordUndo()
         reviewText = reviewText.replacingCharacters(in: range, with: "") as NSString
         if let current = selection {
             selection = NSRange(location: current.location - range.length, length: current.length)
@@ -775,6 +885,7 @@ class VoiceInputController: NSObject {
         guard phase == .reviewing, let range = selection else {
             return
         }
+        recordUndo()
         reviewText = reviewText.replacingCharacters(in: range, with: "") as NSString
         reviewCursor = range.location
         selection = reviewText.length > range.location
@@ -802,6 +913,9 @@ class VoiceInputController: NSObject {
     }
 
     func closeCandidates() {
+        suggestionTask?.cancel()
+        suggestionTask = nil
+        isSuggesting = false
         candidateRange = nil
         candidates = []
         showReview()
@@ -812,6 +926,7 @@ class VoiceInputController: NSObject {
             return
         }
         let candidate = candidates[index]
+        recordUndo()
         reviewText = reviewText.replacingCharacters(in: range, with: candidate) as NSString
         reviewCursor = range.location + (candidate as NSString).length
         selection = nil
@@ -858,6 +973,10 @@ class VoiceInputController: NSObject {
     }
 
     private func reset() {
+        if usesPanel && phase != .idle {
+            // Clears the placeholder marked text (see the input controller).
+            preview?(Preview(text: "", cursor: 0))
+        }
         maxDurationTimer?.invalidate()
         maxDurationTimer = nil
         capture?.stop()
@@ -883,11 +1002,15 @@ class VoiceInputController: NSObject {
         previewText = ""
         reviewText = ""
         reviewCursor = 0
+        undoStack = []
+        redoStack = []
         selection = nil
         candidateRange = nil
         candidates = []
         phase = .idle
+        polishSource = nil
         tooltip.hide()
+        panel.hide()
     }
 
     private func showRecordingStatus() {
@@ -912,7 +1035,117 @@ class VoiceInputController: NSObject {
     }
 
     private func showStatus(_ message: String) {
-        tooltip.show(tooltip: message, at: tooltipOrigin)
+        if usesPanel {
+            renderPanel()
+        } else {
+            tooltip.show(tooltip: message, at: tooltipOrigin)
+        }
+    }
+
+    // MARK: - Panel
+
+    private func renderPanel() {
+        guard usesPanel, phase != .idle else {
+            return
+        }
+        let typing = isTypingEnglish
+            ? NSLocalizedString("English", comment: "") : NSLocalizedString("Bopomofo", comment: "")
+        let level = Preferences.voiceInputPolishLevel
+        let meter = String(repeating: "■", count: level) + String(repeating: "□", count: 10 - level)
+        let polish = String(format: NSLocalizedString("Polish %d", comment: ""), level) + " " + meter
+
+        var header: [String]
+        var body: NSAttributedString
+        var footer: [String] = []
+        switch phase {
+        case .idle:
+            return
+        case .recording:
+            header = ["● " + NSLocalizedString("Recording", comment: ""), polish]
+            if isToggleMode {
+                header.append(typing)
+                footer = [
+                    NSLocalizedString(
+                        "Listening... (Right Option to finish, Esc to cancel)", comment: ""),
+                    isTypingEnglish
+                        ? NSLocalizedString("Typing: English (Left Option to switch)", comment: "")
+                        : NSLocalizedString("Typing: Bopomofo (Left Option to switch)", comment: ""),
+                ]
+            } else {
+                footer = [
+                    NSLocalizedString(
+                        "Listening... (release to finish, Esc to cancel)", comment: "")
+                ]
+            }
+            body = layeredPanelBody()
+        case .processing:
+            if let source = polishSource {
+                header = [NSLocalizedString("Polishing... (Enter to skip)", comment: ""), polish]
+                body = VoicePanel.changes(from: source, to: previewText)
+            } else {
+                header = [NSLocalizedString("Recognizing...", comment: "")]
+                body = VoicePanel.styled(previewText, .stable)
+            }
+        case .reviewing:
+            header = [NSLocalizedString("Check", comment: ""), typing]
+            body = reviewPanelBody()
+            if isSuggesting {
+                footer = [NSLocalizedString("Suggesting...", comment: "")]
+            } else if candidates.isEmpty {
+                footer = [
+                    NSLocalizedString(
+                        "Check: Enter to commit, ←→ to move, ↓ to narrow, ↑ for candidates, Esc to cancel",
+                        comment: "")
+                ]
+            } else {
+                footer = [
+                    candidates.prefix(maximumCandidates).enumerated()
+                        .map { "\($0.offset + 1) \($0.element)" }.joined(separator: "　"),
+                    NSLocalizedString("Number to choose, Esc to close", comment: ""),
+                ]
+            }
+        }
+        panel.show(
+            header: header.joined(separator: "　·　"), body: body,
+            footer: footer.joined(separator: "\n"), below: tooltipOrigin)
+    }
+
+    /// Settled speech, speech still being recognized, and typed text, each in
+    /// its own style.
+    private func layeredPanelBody() -> NSAttributedString {
+        let text = NSMutableAttributedString()
+        var nextItem = 0
+        for segment in segments {
+            switch segment {
+            case .audio(let index):
+                if index < previewItems.count {
+                    let item = String(previewItems[index].dropLast(audioTrims[index, default: 0]))
+                    text.append(VoicePanel.styled(item, .stable))
+                }
+                nextItem = index + 1
+            case .typed(let typed):
+                text.append(VoicePanel.styled(typed, .typed))
+            }
+        }
+        if nextItem < previewItems.count {
+            text.append(VoicePanel.styled(previewItems[nextItem...].joined(), .partial))
+        }
+        text.append(VoicePanel.styled("▍", .caret))
+        return text
+    }
+
+    private func reviewPanelBody() -> NSAttributedString {
+        let text = NSMutableAttributedString(attributedString: VoicePanel.styled(reviewText as String, .stable))
+        if let range = selection {
+            text.addAttributes(VoicePanel.attributes(.selection), range: range)
+        }
+        if let range = candidateRange {
+            text.addAttributes(VoicePanel.attributes(.candidate), range: range)
+        }
+        if selection == nil && candidateRange == nil {
+            text.insert(VoicePanel.styled("▍", .caret), at: min(reviewCursor, text.length))
+        }
+        return text
     }
 
     /// Converts a transcript to Taiwanese Traditional Chinese and removes
@@ -960,6 +1193,176 @@ class VoiceInputController: NSObject {
             return nil
         }
         return FileManager.default.displayName(atPath: appURL.path)
+    }
+}
+
+// MARK: - Floating panel
+
+/// A panel below the cursor showing voice input in progress, so that it reads
+/// the same in every app, however the app draws marked text.
+private final class VoicePanel {
+    enum Style {
+        case stable, partial, typed, caret, deleted, inserted, pending, selection, candidate
+    }
+
+    private var window: NSPanel?
+    private let headerField = NSTextField(labelWithString: "")
+    private let bodyField = NSTextField(wrappingLabelWithString: "")
+    private let footerField = NSTextField(wrappingLabelWithString: "")
+    private let width: CGFloat = 480
+    private let padding: CGFloat = 12
+    private let spacing: CGFloat = 8
+
+    static let bodyFont = NSFont.systemFont(ofSize: 16)
+
+    static func attributes(_ style: Style) -> [NSAttributedString.Key: Any] {
+        var attributes: [NSAttributedString.Key: Any] = [.font: bodyFont]
+        switch style {
+        case .stable:
+            attributes[.foregroundColor] = NSColor.labelColor
+        case .partial, .pending:
+            attributes[.foregroundColor] = NSColor.tertiaryLabelColor
+        case .typed:
+            attributes[.foregroundColor] = NSColor.systemBlue
+            attributes[.backgroundColor] = NSColor.systemBlue.withAlphaComponent(0.15)
+        case .caret:
+            attributes[.foregroundColor] = NSColor.systemOrange
+        case .deleted:
+            attributes[.foregroundColor] = NSColor.systemRed.withAlphaComponent(0.7)
+            attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+            attributes[.backgroundColor] = NSColor.systemRed.withAlphaComponent(0.12)
+        case .inserted:
+            attributes[.foregroundColor] = NSColor.systemGreen
+            attributes[.backgroundColor] = NSColor.systemGreen.withAlphaComponent(0.15)
+        case .selection:
+            attributes[.backgroundColor] = NSColor.systemOrange.withAlphaComponent(0.3)
+        case .candidate:
+            attributes[.backgroundColor] = NSColor.systemOrange.withAlphaComponent(0.5)
+            attributes[.underlineStyle] = NSUnderlineStyle.thick.rawValue
+            attributes[.underlineColor] = NSColor.systemOrange
+        }
+        return attributes
+    }
+
+    static func styled(_ text: String, _ style: Style) -> NSAttributedString {
+        NSAttributedString(string: text, attributes: attributes(style))
+    }
+
+    /// The source with the changes made so far in the (partial) result:
+    /// deletions struck through, insertions highlighted, and the part not yet
+    /// reached left plain.
+    static func changes(from source: String, to result: String) -> NSAttributedString {
+        let a = Array(source), b = Array(result)
+        guard !b.isEmpty else {
+            return styled(source, .pending)
+        }
+        // Longest common subsequence, from the end.
+        var lengths = Array(repeating: Array(repeating: 0, count: b.count + 1), count: a.count + 1)
+        for i in stride(from: a.count - 1, through: 0, by: -1) {
+            for j in stride(from: b.count - 1, through: 0, by: -1) {
+                lengths[i][j] = a[i] == b[j]
+                    ? lengths[i + 1][j + 1] + 1 : max(lengths[i + 1][j], lengths[i][j + 1])
+            }
+        }
+        var ops: [(Style, Character)] = []
+        var i = 0, j = 0
+        while i < a.count && j < b.count {
+            if a[i] == b[j] {
+                ops.append((.stable, a[i]))
+                i += 1
+                j += 1
+            } else if lengths[i + 1][j] >= lengths[i][j + 1] {
+                ops.append((.deleted, a[i]))
+                i += 1
+            } else {
+                ops.append((.inserted, b[j]))
+                j += 1
+            }
+        }
+        // The result may be partial: the rest of the source is not reached
+        // yet rather than deleted.
+        let tail = String(a[i...])
+        ops.append(contentsOf: b[j...].map { (.inserted, $0) })
+        let text = NSMutableAttributedString()
+        for (style, character) in ops {
+            text.append(styled(String(character), style))
+        }
+        text.append(styled(tail, .pending))
+        return text
+    }
+
+    private func makeWindow() -> NSPanel {
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: width, height: 100),
+            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.level = NSWindow.Level(Int(kCGPopUpMenuWindowLevel) + 1)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.hidesOnDeactivate = false
+        let background = NSVisualEffectView()
+        background.material = .popover
+        background.state = .active
+        background.wantsLayer = true
+        background.layer?.cornerRadius = 10
+        background.layer?.masksToBounds = true
+        panel.contentView = background
+        headerField.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        headerField.textColor = .secondaryLabelColor
+        footerField.font = NSFont.systemFont(ofSize: 11)
+        footerField.textColor = .secondaryLabelColor
+        for field in [headerField, bodyField, footerField] {
+            field.isSelectable = false
+            background.addSubview(field)
+        }
+        return panel
+    }
+
+    func show(header: String, body: NSAttributedString, footer: String, below point: NSPoint) {
+        let panel = window ?? makeWindow()
+        window = panel
+        let inner = width - padding * 2
+        headerField.stringValue = header
+        bodyField.attributedStringValue = body
+        footerField.stringValue = footer
+        bodyField.preferredMaxLayoutWidth = inner
+        footerField.preferredMaxLayoutWidth = inner
+        let headerHeight = headerField.fittingSize.height
+        let bodyHeight = body.length > 0 ? bodyField.fittingSize.height : 0
+        let footerHeight = footer.isEmpty ? 0 : footerField.fittingSize.height
+        var height = padding * 2 + headerHeight
+        height += bodyHeight > 0 ? spacing + bodyHeight : 0
+        height += footerHeight > 0 ? spacing + footerHeight : 0
+
+        // Lay out from the top.
+        var y = height - padding - headerHeight
+        headerField.frame = NSRect(x: padding, y: y, width: inner, height: headerHeight)
+        bodyField.isHidden = bodyHeight == 0
+        if bodyHeight > 0 {
+            y -= spacing + bodyHeight
+            bodyField.frame = NSRect(x: padding, y: y, width: inner, height: bodyHeight)
+        }
+        footerField.isHidden = footerHeight == 0
+        if footerHeight > 0 {
+            y -= spacing + footerHeight
+            footerField.frame = NSRect(x: padding, y: y, width: inner, height: footerHeight)
+        }
+
+        // Below the line, kept on the screen with the point.
+        let screen = NSScreen.screens.first { $0.frame.contains(point) } ?? NSScreen.main
+        let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        var origin = NSPoint(x: point.x, y: point.y - 6 - height)
+        if origin.y < visible.minY {
+            origin.y = point.y + 28  // above the line instead
+        }
+        origin.x = min(max(origin.x, visible.minX), visible.maxX - width)
+        origin.y = min(origin.y, visible.maxY - height)
+        panel.setFrame(NSRect(x: origin.x, y: origin.y, width: width, height: height), display: true)
+        panel.orderFront(nil)
+    }
+
+    func hide() {
+        window?.orderOut(nil)
     }
 }
 
@@ -1046,7 +1449,7 @@ private class AudioCapture {
                 // are too short.
                 self.noiseFloor = min(self.noiseFloor, level)
                 var voiced: TimeInterval = 0
-                if level > max(self.noiseFloor + 20, -50) {
+                if level > max(self.noiseFloor + 12, -50) {
                     let previousRun = self.loudRun
                     self.loudRun += chunkDuration
                     if self.loudRun >= self.minimumSpeechRun {
@@ -1116,6 +1519,9 @@ private protocol StreamingTranscriber: AnyObject {
     var uncommittedBytes: Int { get }
     /// Where to save each committed or cleared audio item, for debugging.
     var debugDirectory: URL? { get set }
+    /// Whether the service returns nothing for audio without speech. If not,
+    /// such audio must not be sent: some models make up text for it.
+    var ignoresNonSpeech: Bool { get }
 
     func start()
     func append(audio: Data)
@@ -1168,6 +1574,7 @@ private struct DebugAudioRecorder {
 /// The session has no way to drop uncommitted audio, so clearing commits it
 /// and ignores the resulting transcript.
 private class ElevenLabsTranscriber: StreamingTranscriber {
+    let ignoresNonSpeech = true
     var onUpdate: (([String]) -> Void)?
     var onError: ((Error) -> Void)?
     private(set) var uncommittedBytes = 0
@@ -1371,6 +1778,7 @@ private class ElevenLabsTranscriber: StreamingTranscriber {
 /// called, so that text typed while talking can be placed between them.
 /// Partial transcripts arrive while talking.
 private class RealtimeTranscriber: StreamingTranscriber {
+    let ignoresNonSpeech = false
     /// Called on the main thread with the transcripts so far, one per item.
     var onUpdate: (([String]) -> Void)?
     /// Called on the main thread when the session fails.
@@ -1707,6 +2115,57 @@ extension VoiceInputController {
             let json = try await send(request: &request, form: form)
             return json["text"] as? String ?? ""
         }
+    }
+
+    /// Asks the LLM for replacements of a part of the text that may be wrong.
+    @MainActor
+    fileprivate static func suggest(replacing range: NSRange, in text: String) async throws
+        -> [String]
+    {
+        let key = try apiKey(named: "OPENAI_API_KEY")
+        let model = Preferences.voiceInputLLMModel.isEmpty
+            ? "gpt-5.4-mini" : Preferences.voiceInputLLMModel
+        let marked = (text as NSString).replacingCharacters(
+            in: range, with: "【" + (text as NSString).substring(with: range) + "】")
+        var body: [String: Any] = [
+            "model": model,
+            "messages": [
+                [
+                    "role": "system",
+                    "content": """
+                        以下是語音輸入後的文字，使用者用【】選取了一段，認為可能有誤（常見是同音或近音的辨識錯誤，也可能是用詞或寫法不對）。\
+                        請依上下文提出最多 6 個用來替換【】內文字的建議，最可能的排最前面。\
+                        只輸出 JSON 字串陣列，每個字串只包含替換【】內的文字，不含【】與其他說明。
+                        """,
+                ],
+                ["role": "user", "content": marked],
+            ],
+        ]
+        if model.hasPrefix("gpt-5.") || model.hasPrefix("gpt-6") {
+            body["reasoning_effort"] = "none"
+        } else if model.hasPrefix("gpt-5") {
+            body["reasoning_effort"] = "minimal"
+        }
+        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/chat/completions")!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let json = try await send(request: request)
+        guard let choices = json["choices"] as? [[String: Any]],
+            let message = choices.first?["message"] as? [String: Any],
+            var content = message["content"] as? String
+        else {
+            return []
+        }
+        // Tolerate a fenced code block around the array.
+        if let start = content.firstIndex(of: "["), let end = content.lastIndex(of: "]") {
+            content = String(content[start...end])
+        }
+        let list = (try? JSONSerialization.jsonObject(with: Data(content.utf8))) as? [String]
+        return (list ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
 
     /// Polishes the transcript with an LLM, streaming the output.

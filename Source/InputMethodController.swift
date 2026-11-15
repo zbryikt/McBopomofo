@@ -247,6 +247,9 @@ class McBopomofoInputMethodController: IMKInputController {
         }
 
         if Preferences.voiceInputEnabled && handleVoiceInput(event: event, client: client) {
+            if event.type == .keyDown {
+                refreshVoiceInputPlaceholder()
+            }
             return true
         }
         // Mouse events are recognized only for correcting voice input (see
@@ -321,6 +324,7 @@ class McBopomofoInputMethodController: IMKInputController {
             {
                 VoiceInputController.shared.insert(typedText: characters)
             }
+            refreshVoiceInputPlaceholder()
             return true
         }
         return result
@@ -473,11 +477,17 @@ extension McBopomofoInputMethodController {
                         completion: { text in
                             McBopomofoInputMethodController.commitVoiceInput(text)
                         })
+                    refreshVoiceInputPlaceholder()
                 case .recording:
                     if !voiceInput.isToggleMode || isDown {
                         finishVoiceRecording(client: client)
                     }
-                case .processing, .reviewing:
+                case .reviewing:
+                    if isDown && isEmpty {
+                        voiceInput.openSelectionCandidates()
+                        refreshVoiceInputPlaceholder()
+                    }
+                case .processing:
                     break
                 }
                 return true
@@ -589,17 +599,25 @@ extension McBopomofoInputMethodController {
             voiceInput.cancel()
         case kVK_LeftArrow, kVK_RightArrow:
             let toRight = keyCode == kVK_RightArrow
-            if event.modifierFlags.contains(.command) {
+            if event.modifierFlags.contains(.shift) {
+                voiceInput.adjustSelectionLength(by: toRight ? 1 : -1)
+            } else if event.modifierFlags.contains(.command) {
                 voiceInput.shiftSelection(by: toRight ? 1 : -1)
             } else {
                 voiceInput.moveSelection(toRight: toRight)
             }
         case kVK_DownArrow:
             voiceInput.narrowSelection()
-        case kVK_Space where voiceInput.isTypingEnglish:
+        case kVK_Space:
             voiceInput.insert(typedText: " ")
-        case kVK_UpArrow, kVK_Space:
-            voiceInput.openSelectionCandidates()
+        case kVK_ANSI_Z where !event.modifierFlags.intersection([.command, .control]).isEmpty:
+            if event.modifierFlags.contains(.shift) {
+                voiceInput.redoReview()
+            } else {
+                voiceInput.undoReview()
+            }
+        case kVK_UpArrow:
+            voiceInput.widenSelection()
         case kVK_Delete:
             voiceInput.deleteBackwardInReview()
         case kVK_ForwardDelete:
@@ -665,14 +683,38 @@ extension McBopomofoInputMethodController {
 
     /// The voice input shown around the composing buffer.
     private var voiceInputSurroundings: (before: String, after: String) {
-        guard isTypingIntoVoiceInput else {
+        let voiceInput = VoiceInputController.shared
+        // With the floating panel, marked text holds only what is composed.
+        guard isTypingIntoVoiceInput, !voiceInput.usesPanel else {
             return ("", "")
         }
-        let voiceInput = VoiceInputController.shared
         if voiceInput.phase == .reviewing {
             return voiceInput.reviewSurroundings
         }
         return (voiceInput.previewText, "")
+    }
+
+    /// Marked text standing in for voice input shown in the floating panel.
+    ///
+    /// Some apps (e.g. iTerm2) handle a key themselves when the input method
+    /// neither inserts nor marks text for it, so keys taken by voice input
+    /// must leave marked text behind.
+    private static let voiceInputPlaceholder = "🎙"
+
+    /// Puts the placeholder in place of empty marked text while voice input
+    /// is shown in the panel.
+    private func refreshVoiceInputPlaceholder() {
+        let voiceInput = VoiceInputController.shared
+        guard voiceInput.usesPanel, voiceInput.phase != .idle,
+            McBopomofoInputMethodController.voiceInputController === self,
+            state is InputState.Empty || state is InputState.EmptyIgnoringPreviousState,
+            let client = currentClient as? IMKTextInput
+        else {
+            return
+        }
+        client.setMarkedText(
+            Self.voiceInputPlaceholder, selectionRange: NSMakeRange(2, 0),
+            replacementRange: NSMakeRange(NSNotFound, NSNotFound))
     }
 
     /// Sets the composing buffer as marked text, after the voice input in
@@ -681,6 +723,13 @@ extension McBopomofoInputMethodController {
         _ string: Any, selectionRange: NSRange, client: IMKTextInput
     ) {
         let (prefix, suffix) = voiceInputSurroundings
+        if VoiceInputController.shared.usesPanel && isTypingIntoVoiceInput
+            && ((string as? String)?.isEmpty ?? false)
+        {
+            // Nothing composed: keep the placeholder rather than no marked text.
+            refreshVoiceInputPlaceholder()
+            return
+        }
         guard !prefix.isEmpty || !suffix.isEmpty else {
             client.setMarkedText(
                 string, selectionRange: selectionRange,

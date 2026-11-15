@@ -10,6 +10,11 @@
 #
 # The first install of a new bundle ID still needs the installer (or a log
 # out and log in) before the input method shows up in the input menu.
+#
+# If the code signing identity CODESIGN_IDENTITY (default: "devsuite code
+# signing", made by ~/workspace/devsuite/init-codesign.sh) is in the keychain,
+# the installed bundle is signed with it, so that macOS keeps privacy
+# permissions such as the microphone across rebuilds.
 
 set -euo pipefail
 
@@ -19,6 +24,7 @@ PROJECT="$REPO_DIR/McBopomofo.xcodeproj"
 SCHEME="McBopomofo"
 CONFIGURATION="${CONFIGURATION:-Debug}"
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+CODESIGN_IDENTITY="${CODESIGN_IDENTITY:-devsuite code signing}"
 
 # Use the same DerivedData as Xcode, so builds are shared.
 build_setting() {
@@ -55,6 +61,11 @@ killall -9 "$PRODUCT_NAME" 2>/dev/null || true
 echo "==> Installing to $INSTALLED_APP"
 mkdir -p "$INSTALLED_APP"
 rsync -a --delete "$BUILT_APP/" "$INSTALLED_APP/"
+
+if security find-certificate -c "$CODESIGN_IDENTITY" >/dev/null 2>&1; then
+    echo "==> Signing with \"$CODESIGN_IDENTITY\""
+    codesign --force --deep --sign "$CODESIGN_IDENTITY" "$INSTALLED_APP" 2>/dev/null
+fi
 
 echo "==> Updating Launch Services registrations"
 for stray in \
