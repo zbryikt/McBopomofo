@@ -58,6 +58,8 @@ private let kSwitchInputSourceUponCommandKeyPressInputSourceIDKey = "SwitchInput
 private let kShiftEnterEnabledKey = "ShiftEnterEnabled"
 private let kRepeatedPunctuationToSelectCandidateEnabledKey =
     "RepeatedPunctuationToSelectCandidateEnabled"
+private let kModeTipEnabledKey = "ModeTipEnabled"
+private let kModeTipPersistentKey = "ModeTipPersistent"
 private let kVoiceInputEnabledKey = "VoiceInputEnabled"
 private let kVoiceInputAPIKeyFileKey = "VoiceInputAPIKeyFile"
 private let kVoiceInputASRProviderKey = "VoiceInputASRProvider"
@@ -254,6 +256,8 @@ class Preferences: NSObject {
             kRepeatedPunctuationToSelectCandidateEnabledKey,
             kUseCustomUserPhraseLocation,
             kCustomUserPhraseLocation,
+            kModeTipEnabledKey,
+            kModeTipPersistentKey,
             kVoiceInputEnabledKey,
             kVoiceInputAPIKeyFileKey,
             kVoiceInputASRProviderKey,
@@ -538,6 +542,15 @@ extension Preferences {
 
     @UserDefault(key: kSwitchInputSourceUponCommandKeyPressInputSourceIDKey, defaultValue: "com.apple.keylayout.ABC")
     static var switchInputSourceUponCommandKeyPressInputSourceID: String
+
+    /// Briefly shows Chinese or English (Caps Lock) next to the cursor when the
+    /// input method is activated or Caps Lock is toggled.
+    @UserDefault(key: kModeTipEnabledKey, defaultValue: true)
+    static var modeTipEnabled: Bool
+
+    /// Keeps a small Chinese / English badge below the cursor instead.
+    @UserDefault(key: kModeTipPersistentKey, defaultValue: false)
+    static var modeTipPersistent: Bool
 
     /// Push-to-talk voice input with the right Option key (experimental).
     @UserDefault(key: kVoiceInputEnabledKey, defaultValue: false)

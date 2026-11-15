@@ -188,9 +188,18 @@ class McBopomofoInputMethodController: IMKInputController {
         keyHandler.syncWithPreferences()
 
         (NSApp.delegate as? AppDelegate)?.checkForUpdate()
+
+        // Give the client a moment to report where its cursor is.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            self?.showModeTip()
+        }
     }
 
     override func deactivateServer(_ client: Any!) {
+        if McBopomofoInputMethodController.modeBadgeOwner === self {
+            ModeBadge.shared.hide()
+            McBopomofoInputMethodController.modeBadgeOwner = nil
+        }
         // The voice input preview lives in this client's marked text.
         if McBopomofoInputMethodController.voiceInputController === self {
             let voiceInput = VoiceInputController.shared
@@ -245,6 +254,12 @@ class McBopomofoInputMethodController: IMKInputController {
             commitComposition(client)
             return false
         }
+        if Preferences.modeTipPersistent {
+            // After the app has handled the key and moved its cursor.
+            DispatchQueue.main.async { [weak self] in
+                self?.updateModeBadge()
+            }
+        }
 
         if Preferences.voiceInputEnabled && handleVoiceInput(event: event, client: client) {
             if event.type == .keyDown {
@@ -256,6 +271,10 @@ class McBopomofoInputMethodController: IMKInputController {
         // mouseDown(onCharacterIndex:)); the key handler takes key events.
         if event.type == .leftMouseDown {
             return false
+        }
+
+        if event.type == .flagsChanged && event.keyCode == UInt16(kVK_CapsLock) {
+            showModeTip(capsLock: event.modifierFlags.contains(.capsLock))
         }
 
         if event.type == .flagsChanged {
@@ -328,6 +347,69 @@ class McBopomofoInputMethodController: IMKInputController {
             return true
         }
         return result
+    }
+
+    // MARK: - Mode Tip
+
+    private static let modeTip = TooltipController()
+    private static var modeTipGeneration = 0
+
+    /// Briefly shows next to the cursor whether keys type Chinese or, with
+    /// Caps Lock on, English.
+    private func showModeTip(capsLock: Bool = NSEvent.modifierFlags.contains(.capsLock)) {
+        if Preferences.modeTipPersistent {
+            McBopomofoInputMethodController.modeBadgeOwner = self
+            updateModeBadge(capsLock: capsLock)
+            return
+        }
+        guard Preferences.modeTipEnabled, currentClient != nil,
+            McBopomofoInputMethodController.activeController === self,
+            let client = currentClient as? IMKTextInput
+        else {
+            return
+        }
+        var lineHeightRect = NSMakeRect(0, 0, 16, 16)
+        client.attributes(forCharacterIndex: 0, lineHeightRectangle: &lineHeightRect)
+        guard lineHeightRect.origin != .zero else {
+            return
+        }
+        let tip = capsLock ? "EN" : "中"
+        Self.modeTipGeneration += 1
+        let generation = Self.modeTipGeneration
+        Self.modeTip.show(tooltip: tip, at: lineHeightRect.origin)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            if generation == Self.modeTipGeneration {
+                Self.modeTip.hide()
+            }
+        }
+    }
+
+    /// The controller whose cursor the persistent mode badge follows.
+    private static weak var modeBadgeOwner: McBopomofoInputMethodController?
+
+    /// Moves the persistent mode badge to the cursor, and shows the mode.
+    private func updateModeBadge(capsLock: Bool = NSEvent.modifierFlags.contains(.capsLock)) {
+        guard Preferences.modeTipPersistent,
+            McBopomofoInputMethodController.modeBadgeOwner === self,
+            let client = currentClient as? IMKTextInput
+        else {
+            return
+        }
+        var lineHeightRect = NSMakeRect(0, 0, 16, 16)
+        var index = 0
+        if let state = state as? InputState.NotEmpty {
+            index = Int(state.cursorIndex)
+        }
+        client.attributes(forCharacterIndex: index, lineHeightRectangle: &lineHeightRect)
+        guard lineHeightRect.origin != .zero else {
+            ModeBadge.shared.hide()
+            return
+        }
+        ModeBadge.shared.show(english: capsLock, above: lineHeightRect) { [weak self] in
+            // Polled: the input method is not told when the cursor moves
+            // with the mouse.
+            self?.updateModeBadge()
+        }
     }
 
     // MARK: - Menu Items
@@ -1372,5 +1454,62 @@ extension McBopomofoInputMethodController {
                         "Check McBopomofo menu for user file issues", comment: ""), stay: true)
             }
         }
+    }
+}
+
+// MARK: - Mode Badge
+
+/// A small label kept above the cursor, showing whether keys type Chinese
+/// or English (Caps Lock).
+private final class ModeBadge {
+    static let shared = ModeBadge()
+
+    private var window: NSPanel?
+    private let label = NSTextField(labelWithString: "")
+    private var timer: Timer?
+    private let size = NSSize(width: 22, height: 16)
+
+    private func makeWindow() -> NSPanel {
+        let panel = NSPanel(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.level = NSWindow.Level(Int(kCGPopUpMenuWindowLevel) + 1)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.hidesOnDeactivate = false
+        panel.ignoresMouseEvents = true
+        let view = NSView(frame: NSRect(origin: .zero, size: size))
+        view.wantsLayer = true
+        view.layer?.cornerRadius = 4
+        label.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
+        label.alignment = .center
+        label.textColor = .white
+        label.frame = NSRect(x: 0, y: 1, width: size.width, height: size.height - 2)
+        view.addSubview(label)
+        panel.contentView = view
+        return panel
+    }
+
+    /// Shows the badge above the cursor line (macOS shows its own indicators
+    /// below it), and calls `poll` periodically while shown to follow the
+    /// cursor.
+    func show(english: Bool, above line: NSRect, poll: @escaping () -> Void) {
+        let panel = window ?? makeWindow()
+        window = panel
+        label.stringValue = english ? "EN" : "中"
+        panel.contentView?.layer?.backgroundColor = (english
+            ? NSColor.systemGray : NSColor(srgbRed: 0.78, green: 0.52, blue: 0.12, alpha: 1))
+            .withAlphaComponent(0.85).cgColor
+        panel.setFrameOrigin(NSPoint(x: line.minX - 2, y: line.maxY + 2))
+        panel.orderFront(nil)
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { _ in poll() }
+    }
+
+    func hide() {
+        timer?.invalidate()
+        timer = nil
+        window?.orderOut(nil)
     }
 }
