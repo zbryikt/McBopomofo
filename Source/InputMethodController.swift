@@ -62,6 +62,8 @@ class McBopomofoInputMethodController: IMKInputController {
 
     // The controller of the currently focused client, which receives voice input results.
     private static weak var activeController: McBopomofoInputMethodController?
+    // The controller where the ongoing voice input started and is previewed.
+    private static weak var voiceInputController: McBopomofoInputMethodController?
 
     // MARK: - IMKInputController methods
 
@@ -187,6 +189,10 @@ class McBopomofoInputMethodController: IMKInputController {
     }
 
     override func deactivateServer(_ client: Any!) {
+        // The voice input preview lives in this client's marked text.
+        if McBopomofoInputMethodController.voiceInputController === self {
+            VoiceInputController.shared.cancel()
+        }
         currentClient = nil
         if McBopomofoInputMethodController.activeController === self {
             McBopomofoInputMethodController.activeController = nil
@@ -426,9 +432,15 @@ extension McBopomofoInputMethodController {
                 && (state is InputState.Empty || state is InputState.EmptyIgnoringPreviousState),
                 let client = client as? IMKTextInput
             {
-                voiceInput.start(client: client) { text in
-                    McBopomofoInputMethodController.commitVoiceInput(text)
-                }
+                McBopomofoInputMethodController.voiceInputController = self
+                voiceInput.start(
+                    client: client,
+                    preview: { [weak self] text in
+                        self?.previewVoiceInput(text)
+                    },
+                    completion: { text in
+                        McBopomofoInputMethodController.commitVoiceInput(text)
+                    })
                 return true
             }
             if voiceInput.phase == .recording {
@@ -447,9 +459,35 @@ extension McBopomofoInputMethodController {
                 // Right Option is being used as a modifier (e.g. Option + key),
                 // not for talking.
                 voiceInput.cancel()
+                return false
             }
+            // Processing: Enter commits the preview as is; other keys are
+            // ignored so they don't mix with the preview.
+            if event.keyCode == UInt16(kVK_Return) || event.keyCode == UInt16(kVK_ANSI_KeypadEnter) {
+                voiceInput.commitPreview()
+            }
+            return true
         }
         return false
+    }
+
+    /// Shows the voice input in progress as marked text.
+    private func previewVoiceInput(_ text: String) {
+        guard McBopomofoInputMethodController.voiceInputController === self,
+            let client = currentClient as? IMKTextInput,
+            state is InputState.Empty || state is InputState.EmptyIgnoringPreviousState
+        else {
+            return
+        }
+        let length = (text as NSString).length
+        let attributes: [NSAttributedString.Key: Any] = [
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+            .markedClauseSegment: 0,
+        ]
+        client.setMarkedText(
+            NSAttributedString(string: text, attributes: attributes),
+            selectionRange: NSMakeRange(length, 0),
+            replacementRange: NSMakeRange(NSNotFound, NSNotFound))
     }
 
     /// Commits voice input to the focused client, or copies it to the
@@ -457,6 +495,7 @@ extension McBopomofoInputMethodController {
     private static func commitVoiceInput(_ text: String) {
         if let controller = activeController, let client = controller.currentClient,
             controller.state is InputState.Empty
+                || controller.state is InputState.EmptyIgnoringPreviousState
         {
             controller.commit(text: text, client: client)
             return

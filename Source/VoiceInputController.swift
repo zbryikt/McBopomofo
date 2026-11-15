@@ -30,10 +30,13 @@ import TooltipUI
 
 /// Push-to-talk voice input (proof of concept).
 ///
-/// While the trigger key is held, audio is recorded. On release, the audio is
-/// sent to a cloud speech recognition (ASR) service, and the transcript is
-/// then cleaned up by an LLM (filler words, self-corrections, punctuation)
-/// before being handed back for committing.
+/// While the trigger key is held, audio is captured. With the default
+/// "openai-realtime" provider, audio is streamed to the OpenAI Realtime API
+/// and the partial transcript is shown as a preview while talking; other
+/// providers receive the whole recording on release. The transcript is then
+/// cleaned up by an LLM (filler words, self-corrections, punctuation), whose
+/// streamed output replaces the preview, before being handed back for
+/// committing.
 class VoiceInputController: NSObject {
     enum Phase {
         case idle
@@ -47,22 +50,28 @@ class VoiceInputController: NSObject {
 
     private let tooltip = TooltipController()
     private var tooltipOrigin = NSPoint.zero
-    private var recorder: AVAudioRecorder?
-    private var recordingURL: URL?
+    private var capture: AudioCapture?
+    private var transcriber: RealtimeTranscriber?
+    private var recordedAudio = Data()
     private var recordingStartTime: Date?
     private var maxDurationTimer: Timer?
     private var task: Task<Void, Never>?
     private var appName: String?
+    private var preview: ((String) -> Void)?
     private var completion: ((String) -> Void)?
+    /// The text currently shown in the preview.
+    private var previewText = ""
 
     /// Recordings shorter than this are treated as an accidental key tap.
     private let minimumDuration: TimeInterval = 0.4
     // Recordings whose peak level never exceeds this (in dBFS) are treated as
     // silence; ASR models tend to hallucinate (e.g. echo the prompt) on them.
     private let silenceThreshold: Float = -45
-    private var peakPower: Float = -160
-    private var meterTimer: Timer?
     private let maximumDuration: TimeInterval = 180
+
+    private var isStreaming: Bool {
+        Preferences.voiceInputASRProvider == "openai-realtime"
+    }
 
     // MARK: - Public interface
 
@@ -71,8 +80,13 @@ class VoiceInputController: NSObject {
     /// - Parameters:
     ///   - client: The client where the recording is started. Used to locate
     ///     the status tooltip and to provide context to the LLM.
+    ///   - preview: Called on the main thread with the text to show while
+    ///     talking and polishing; an empty string clears the preview.
     ///   - completion: Called on the main thread with the final text.
-    func start(client: IMKTextInput, completion: @escaping (String) -> Void) {
+    func start(
+        client: IMKTextInput, preview: @escaping (String) -> Void,
+        completion: @escaping (String) -> Void
+    ) {
         guard phase == .idle else {
             return
         }
@@ -100,29 +114,48 @@ class VoiceInputController: NSObject {
             return
         }
 
-        let url = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-            .appendingPathComponent("McBopomofoVoiceInput-\(UUID().uuidString).m4a")
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: 16000,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 32000,
-        ]
         do {
-            let recorder = try AVAudioRecorder(url: url, settings: settings)
-            recorder.isMeteringEnabled = true
-            guard recorder.record() else {
-                throw VoiceInputError.message("Unable to start recording")
+            if isStreaming {
+                let transcriber = try RealtimeTranscriber(
+                    apiKey: Self.apiKey(named: "OPENAI_API_KEY"),
+                    model: Preferences.voiceInputASRModel.isEmpty
+                        ? "gpt-live-transcribe" : Preferences.voiceInputASRModel,
+                    prompt: Self.asrPrompt)
+                transcriber.onUpdate = { [weak self] text in
+                    guard let self = self, self.phase == .recording else {
+                        return
+                    }
+                    self.show(preview: Self.toTraditional(text))
+                }
+                transcriber.onError = { [weak self] error in
+                    self?.fail(with: error)
+                }
+                transcriber.start()
+                self.transcriber = transcriber
             }
-            self.recorder = recorder
+            recordedAudio = Data()
+            let capture = AudioCapture()
+            capture.onAudio = { [weak self] data in
+                guard let self = self, self.phase == .recording else {
+                    return
+                }
+                if let transcriber = self.transcriber {
+                    transcriber.append(audio: data)
+                } else {
+                    self.recordedAudio.append(data)
+                }
+            }
+            try capture.start()
+            self.capture = capture
         } catch {
-            NSLog("McBopomofo voice input: failed to record: \(error)")
-            NotifierController.notify(message: error.localizedDescription)
+            NSLog("McBopomofo voice input: failed to start: \(error)")
+            reset()
+            NotifierController.notify(message: error.localizedDescription, stay: true)
             return
         }
 
+        self.preview = preview
         self.completion = completion
-        recordingURL = url
         recordingStartTime = Date()
         appName = Self.applicationName(for: client)
         tooltipOrigin = Self.cursorOrigin(for: client)
@@ -134,39 +167,26 @@ class VoiceInputController: NSObject {
         ) { [weak self] _ in
             self?.finishRecording()
         }
-        peakPower = -160
-        meterTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-            self?.updatePeakPower()
-        }
-    }
-
-    private func updatePeakPower() {
-        guard let recorder = recorder else {
-            return
-        }
-        recorder.updateMeters()
-        peakPower = max(peakPower, recorder.peakPower(forChannel: 0))
     }
 
     /// Stops recording and starts transcribing.
     func finishRecording() {
-        guard phase == .recording, let recorder = recorder, let url = recordingURL else {
+        guard phase == .recording, let capture = capture else {
             return
         }
         maxDurationTimer?.invalidate()
         maxDurationTimer = nil
-        updatePeakPower()
-        recorder.stop()
-        self.recorder = nil
+        capture.stop()
+        self.capture = nil
 
         let duration = Date().timeIntervalSince(recordingStartTime ?? Date())
         if duration < minimumDuration {
-            reset()
+            cancel()
             return
         }
-        NSLog("McBopomofo voice input: duration %.1fs, peak %.1f dB", duration, peakPower)
-        if peakPower < silenceThreshold {
-            reset()
+        NSLog("McBopomofo voice input: duration %.1fs, peak %.1f dB", duration, capture.peakPower)
+        if capture.peakPower < silenceThreshold {
+            cancel()
             NotifierController.notify(
                 message: NSLocalizedString(
                     "No sound was recorded. Please check the input device in System Settings > Sound.",
@@ -178,80 +198,119 @@ class VoiceInputController: NSObject {
         showStatus(NSLocalizedString("Recognizing...", comment: ""))
 
         let appName = appName
-        task = Task { [weak self] in
+        let transcriber = transcriber
+        let audio = recordedAudio
+        task = Task { @MainActor [weak self] in
             do {
-                let audio = try Data(contentsOf: url)
-                var transcript = try await Self.transcribe(audio: audio)
+                var transcript: String
+                if let transcriber = transcriber {
+                    transcript = Self.toTraditional(try await transcriber.finish())
+                } else {
+                    transcript = try await Self.transcribe(
+                        audio: AudioCapture.wavData(pcm: audio))
+                }
+                try Task.checkCancellation()
                 // Some models echo the prompt back when they hear nothing useful.
                 if transcript.trimmingCharacters(in: .whitespacesAndNewlines) == Self.asrPrompt {
                     transcript = ""
                 }
-                try Task.checkCancellation()
+                self?.show(preview: transcript)
                 var text = transcript
                 if !Preferences.voiceInputLLMModel.isEmpty && !transcript.isEmpty {
-                    await MainActor.run {
-                        self?.showStatus(NSLocalizedString("Polishing...", comment: ""))
+                    self?.showStatus(NSLocalizedString("Polishing... (Enter to skip)", comment: ""))
+                    text = try await Self.refine(transcript: transcript, appName: appName) {
+                        partial in
+                        self?.show(preview: partial)
                     }
-                    text = try await Self.refine(transcript: transcript, appName: appName)
                     try Task.checkCancellation()
                 }
-                await MainActor.run {
-                    self?.finish(with: text)
-                }
+                self?.finish(with: text)
             } catch is CancellationError {
                 // Cancelled by the user.
             } catch {
-                NSLog("McBopomofo voice input: \(error)")
-                await MainActor.run {
-                    self?.reset()
-                    NotifierController.notify(
-                        message: NSLocalizedString("Voice input failed: ", comment: "")
-                            + error.localizedDescription, stay: true)
-                }
+                self?.fail(with: error)
             }
         }
     }
 
-    /// Cancels the ongoing recording or processing.
-    func cancel() {
-        guard phase != .idle else {
+    /// Commits what is shown in the preview without waiting for the
+    /// transcription or polishing to finish.
+    func commitPreview() {
+        guard phase == .processing else {
             return
         }
         task?.cancel()
-        recorder?.stop()
+        finish(with: previewText)
+    }
+
+    /// Cancels the ongoing recording or processing.
+    func cancel() {
+        guard phase != .idle || capture != nil else {
+            return
+        }
+        task?.cancel()
+        show(preview: "")
         reset()
     }
 
     // MARK: - Private
 
+    private func show(preview text: String) {
+        guard text != previewText else {
+            return
+        }
+        previewText = text
+        preview?(text)
+    }
+
     private func finish(with text: String) {
         let completion = completion
-        reset()
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            show(preview: "")
+        }
+        reset()
         if !trimmed.isEmpty {
             completion?(trimmed)
         }
     }
 
+    private func fail(with error: Error) {
+        guard phase != .idle else {
+            return
+        }
+        NSLog("McBopomofo voice input: \(error)")
+        task?.cancel()
+        show(preview: "")
+        reset()
+        NotifierController.notify(
+            message: NSLocalizedString("Voice input failed: ", comment: "")
+                + error.localizedDescription, stay: true)
+    }
+
     private func reset() {
         maxDurationTimer?.invalidate()
         maxDurationTimer = nil
-        meterTimer?.invalidate()
-        meterTimer = nil
-        if let url = recordingURL {
-            try? FileManager.default.removeItem(at: url)
-        }
-        recorder = nil
-        recordingURL = nil
+        capture?.stop()
+        capture = nil
+        transcriber?.close()
+        transcriber = nil
+        recordedAudio = Data()
         recordingStartTime = nil
         task = nil
+        preview = nil
         completion = nil
+        previewText = ""
         phase = .idle
         tooltip.hide()
     }
 
     private func showStatus(_ message: String) {
         tooltip.show(tooltip: message, at: tooltipOrigin)
+    }
+
+    private static func toTraditional(_ text: String) -> String {
+        OpenCCBridge.shared.convertToTraditional(text) ?? text
     }
 
     private static func cursorOrigin(for client: IMKTextInput) -> NSPoint {
@@ -273,6 +332,268 @@ class VoiceInputController: NSObject {
     }
 }
 
+// MARK: - Audio capture
+
+/// Captures microphone audio as 24 kHz mono 16-bit PCM.
+private class AudioCapture {
+    static let sampleRate: Double = 24000
+
+    /// Called on the main thread with each chunk of PCM data.
+    var onAudio: ((Data) -> Void)?
+    /// The peak level so far, in dBFS. Updated on the main thread.
+    private(set) var peakPower: Float = -160
+
+    private let engine = AVAudioEngine()
+
+    func start() throws {
+        let input = engine.inputNode
+        let inputFormat = input.outputFormat(forBus: 0)
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+            throw VoiceInputError.message("No audio input device")
+        }
+        guard
+            let outputFormat = AVAudioFormat(
+                commonFormat: .pcmFormatInt16, sampleRate: Self.sampleRate, channels: 1,
+                interleaved: true),
+            let converter = AVAudioConverter(from: inputFormat, to: outputFormat)
+        else {
+            throw VoiceInputError.message("Unsupported audio input format")
+        }
+
+        input.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) {
+            [weak self] buffer, _ in
+            var peak: Float = 0
+            if let samples = buffer.floatChannelData?[0] {
+                for i in 0..<Int(buffer.frameLength) {
+                    peak = max(peak, abs(samples[i]))
+                }
+            }
+
+            let capacity = AVAudioFrameCount(
+                Double(buffer.frameLength) * Self.sampleRate / inputFormat.sampleRate) + 32
+            guard
+                let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity)
+            else {
+                return
+            }
+            var consumed = false
+            var error: NSError?
+            converter.convert(to: output, error: &error) { _, status in
+                if consumed {
+                    status.pointee = .noDataNow
+                    return nil
+                }
+                consumed = true
+                status.pointee = .haveData
+                return buffer
+            }
+            guard error == nil, output.frameLength > 0, let pcm = output.int16ChannelData else {
+                return
+            }
+            let data = Data(bytes: pcm[0], count: Int(output.frameLength) * 2)
+            let power = peak > 0 ? 20 * log10(peak) : -160
+            DispatchQueue.main.async {
+                guard let self = self else {
+                    return
+                }
+                self.peakPower = max(self.peakPower, power)
+                self.onAudio?(data)
+            }
+        }
+        engine.prepare()
+        do {
+            try engine.start()
+        } catch {
+            input.removeTap(onBus: 0)
+            throw error
+        }
+    }
+
+    func stop() {
+        guard engine.isRunning else {
+            return
+        }
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+    }
+
+    /// Wraps PCM data produced by AudioCapture in a WAV container.
+    static func wavData(pcm: Data) -> Data {
+        func le<T: FixedWidthInteger>(_ value: T) -> Data {
+            withUnsafeBytes(of: value.littleEndian) { Data($0) }
+        }
+        let rate = UInt32(sampleRate)
+        var data = Data("RIFF".utf8)
+        data.append(le(UInt32(36 + pcm.count)))
+        data.append(contentsOf: Array("WAVEfmt ".utf8))
+        data.append(le(UInt32(16)))
+        data.append(le(UInt16(1)))  // PCM
+        data.append(le(UInt16(1)))  // mono
+        data.append(le(rate))
+        data.append(le(rate * 2))  // byte rate
+        data.append(le(UInt16(2)))  // block align
+        data.append(le(UInt16(16)))  // bits per sample
+        data.append(contentsOf: Array("data".utf8))
+        data.append(le(UInt32(pcm.count)))
+        data.append(pcm)
+        return data
+    }
+}
+
+// MARK: - OpenAI Realtime transcription
+
+/// Streams audio to the OpenAI Realtime API in a transcription session.
+///
+/// Turn detection is off: the whole recording is one item, committed when the
+/// key is released. Partial transcripts arrive while talking.
+private class RealtimeTranscriber {
+    /// Called on the main thread with the transcript so far.
+    var onUpdate: ((String) -> Void)?
+    /// Called on the main thread when the session fails.
+    var onError: ((Error) -> Void)?
+
+    private let socket: URLSessionWebSocketTask
+    private let session: [String: Any]
+    private var transcript = ""
+    private var finalTranscript: String?
+    private var finishContinuation: CheckedContinuation<String, Error>?
+    private var closed = false
+
+    init(apiKey: String, model: String, prompt: String) {
+        var request = URLRequest(
+            url: URL(string: "wss://api.openai.com/v1/realtime?intent=transcription")!)
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        socket = URLSession.shared.webSocketTask(with: request)
+        session = [
+            "type": "transcription",
+            "audio": [
+                "input": [
+                    "format": ["type": "audio/pcm", "rate": Int(AudioCapture.sampleRate)],
+                    "transcription": ["model": model, "prompt": prompt],
+                    "turn_detection": NSNull(),
+                ]
+            ],
+        ]
+    }
+
+    func start() {
+        socket.resume()
+        send(["type": "session.update", "session": session])
+        receive()
+    }
+
+    func append(audio: Data) {
+        send(["type": "input_audio_buffer.append", "audio": audio.base64EncodedString()])
+    }
+
+    /// Commits the audio and waits for the final transcript.
+    func finish() async throws -> String {
+        if let finalTranscript = finalTranscript {
+            return finalTranscript
+        }
+        send(["type": "input_audio_buffer.commit"])
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                finishContinuation = continuation
+                DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+                    self?.resolve(.failure(VoiceInputError.message("Transcription timed out")))
+                }
+            }
+        } onCancel: {
+            DispatchQueue.main.async { [weak self] in
+                self?.resolve(.failure(CancellationError()))
+            }
+        }
+    }
+
+    func close() {
+        guard !closed else {
+            return
+        }
+        closed = true
+        socket.cancel(with: .normalClosure, reason: nil)
+        resolve(.failure(CancellationError()))
+    }
+
+    private func resolve(_ result: Result<String, Error>) {
+        guard let continuation = finishContinuation else {
+            return
+        }
+        finishContinuation = nil
+        continuation.resume(with: result)
+    }
+
+    private func send(_ event: [String: Any]) {
+        guard !closed, let data = try? JSONSerialization.data(withJSONObject: event),
+            let text = String(data: data, encoding: .utf8)
+        else {
+            return
+        }
+        socket.send(.string(text)) { [weak self] error in
+            if let error = error {
+                DispatchQueue.main.async {
+                    self?.handle(error: error)
+                }
+            }
+        }
+    }
+
+    private func receive() {
+        socket.receive { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self, !self.closed else {
+                    return
+                }
+                switch result {
+                case .success(.string(let text)):
+                    self.handle(message: text)
+                    self.receive()
+                case .success:
+                    self.receive()
+                case .failure(let error):
+                    self.handle(error: error)
+                }
+            }
+        }
+    }
+
+    private func handle(message: String) {
+        guard let data = message.data(using: .utf8),
+            let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let type = event["type"] as? String
+        else {
+            return
+        }
+        switch type {
+        case "conversation.item.input_audio_transcription.delta":
+            transcript += event["delta"] as? String ?? ""
+            onUpdate?(transcript)
+        case "conversation.item.input_audio_transcription.completed":
+            let text = event["transcript"] as? String ?? transcript
+            finalTranscript = text
+            resolve(.success(text))
+        case "conversation.item.input_audio_transcription.failed", "error":
+            let error = event["error"] as? [String: Any]
+            let message = error?["message"] as? String ?? type
+            handle(error: VoiceInputError.message(message))
+        default:
+            break
+        }
+    }
+
+    private func handle(error: Error) {
+        guard !closed else {
+            return
+        }
+        if finishContinuation != nil {
+            resolve(.failure(error))
+        } else {
+            onError?(error)
+        }
+        close()
+    }
+}
+
 // MARK: - Cloud services
 
 enum VoiceInputError: LocalizedError {
@@ -290,7 +611,7 @@ extension VoiceInputController {
     /// Vocabulary hint given to the ASR service. Besides biasing the
     /// recognizer to Taiwanese Mandarin, it makes OpenAI models output
     /// Traditional Chinese.
-    private static let asrPrompt = "以下是台灣人說的繁體中文，可能夾雜英文術語。"
+    fileprivate static let asrPrompt = "以下是台灣人說的繁體中文，可能夾雜英文術語。"
 
     private static let refinePrompt = """
         你是語音輸入的文字整理器。使用者用說的方式輸入文字，<transcript> 裡是語音辨識的原始結果。\
@@ -313,13 +634,12 @@ extension VoiceInputController {
                 ? "scribe_v2" : Preferences.voiceInputASRModel)
             form.add(name: "language_code", value: "zho")
             form.add(name: "tag_audio_events", value: "false")
-            form.add(name: "file", filename: "audio.m4a", mimeType: "audio/mp4", data: audio)
+            form.add(name: "file", filename: "audio.wav", mimeType: "audio/wav", data: audio)
             var request = URLRequest(url: URL(string: "https://api.elevenlabs.io/v1/speech-to-text")!)
             request.setValue(key, forHTTPHeaderField: "xi-api-key")
             let json = try await send(request: &request, form: form)
-            let text = json["text"] as? String ?? ""
             // Scribe outputs Simplified Chinese for Mandarin.
-            return OpenCCBridge.shared.convertToTraditional(text) ?? text
+            return toTraditional(json["text"] as? String ?? "")
         default:
             let key = try apiKey(named: "OPENAI_API_KEY")
             var form = MultipartForm()
@@ -328,7 +648,7 @@ extension VoiceInputController {
             form.add(name: "language", value: "zh")
             form.add(name: "prompt", value: asrPrompt)
             form.add(name: "response_format", value: "json")
-            form.add(name: "file", filename: "audio.m4a", mimeType: "audio/mp4", data: audio)
+            form.add(name: "file", filename: "audio.wav", mimeType: "audio/wav", data: audio)
             var request = URLRequest(
                 url: URL(string: "https://api.openai.com/v1/audio/transcriptions")!)
             request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
@@ -337,7 +657,13 @@ extension VoiceInputController {
         }
     }
 
-    fileprivate static func refine(transcript: String, appName: String?) async throws -> String {
+    /// Polishes the transcript with an LLM, streaming the output.
+    ///
+    /// - Parameter onPartial: Called on the main thread with the output so far.
+    @MainActor
+    fileprivate static func refine(
+        transcript: String, appName: String?, onPartial: @escaping (String) -> Void
+    ) async throws -> String {
         let key = try apiKey(named: "OPENAI_API_KEY")
         let model = Preferences.voiceInputLLMModel
         var system = refinePrompt
@@ -346,6 +672,7 @@ extension VoiceInputController {
         }
         var body: [String: Any] = [
             "model": model,
+            "stream": true,
             "messages": [
                 ["role": "system", "content": system],
                 ["role": "user", "content": "<transcript>\(transcript)</transcript>"],
@@ -363,14 +690,38 @@ extension VoiceInputController {
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let json = try await send(request: request)
-        guard let choices = json["choices"] as? [[String: Any]],
-            let message = choices.first?["message"] as? [String: Any],
-            let content = message["content"] as? String
-        else {
-            throw VoiceInputError.message("Unexpected LLM response")
+
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200 else {
+            var data = Data()
+            for try await byte in bytes.prefix(300) {
+                data.append(byte)
+            }
+            throw VoiceInputError.message(
+                "HTTP \(status) \(String(data: data, encoding: .utf8) ?? "")")
         }
-        return content
+        var text = ""
+        for try await line in bytes.lines {
+            guard line.hasPrefix("data:") else {
+                continue
+            }
+            let payload = line.dropFirst("data:".count).trimmingCharacters(in: .whitespaces)
+            if payload == "[DONE]" {
+                break
+            }
+            guard let data = payload.data(using: .utf8),
+                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let choices = json["choices"] as? [[String: Any]],
+                let delta = choices.first?["delta"] as? [String: Any],
+                let content = delta["content"] as? String
+            else {
+                continue
+            }
+            text += content
+            onPartial(text)
+        }
+        return text
     }
 
     private static func send(request: inout URLRequest, form: MultipartForm) async throws

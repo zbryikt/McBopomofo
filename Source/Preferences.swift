@@ -539,8 +539,9 @@ extension Preferences {
         defaultValue: "~/Library/Application Support/DaMaiVoice/voice-input.env")
     static var voiceInputAPIKeyFile: String
 
-    /// The speech recognition service: "openai" or "elevenlabs".
-    @UserDefault(key: kVoiceInputASRProviderKey, defaultValue: "openai")
+    /// The speech recognition service: "openai-realtime" (streaming), "openai" or
+    /// "elevenlabs".
+    @UserDefault(key: kVoiceInputASRProviderKey, defaultValue: "openai-realtime")
     static var voiceInputASRProvider: String
 
     /// The speech recognition model. Empty to use the provider's default.
