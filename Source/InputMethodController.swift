@@ -64,6 +64,8 @@ class McBopomofoInputMethodController: IMKInputController {
     private static weak var activeController: McBopomofoInputMethodController?
     // The controller where the ongoing voice input started and is previewed.
     private static weak var voiceInputController: McBopomofoInputMethodController?
+    // Whether the left Option key is pressed with no other key since.
+    private var isLeftOptionTapPending = false
 
     // MARK: - IMKInputController methods
 
@@ -299,6 +301,18 @@ class McBopomofoInputMethodController: IMKInputController {
                 NSSound.beep()
             }
         }
+        // Keys the key handler passes on (e.g. Space with nothing composed)
+        // would reach the app; during a toggle-mode recording they join the
+        // voice input instead.
+        if !result && isTypingIntoVoiceInput {
+            if let characters = event.characters, !characters.isEmpty,
+                event.modifierFlags.intersection([.command, .control]).isEmpty,
+                characters.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) })
+            {
+                VoiceInputController.shared.append(typedText: characters)
+            }
+            return true
+        }
         return result
     }
 
@@ -420,82 +434,179 @@ extension McBopomofoInputMethodController {
 
     /// Handles voice input. Holding the right Option key records, releasing
     /// it transcribes; with Command held when pressing it, recording toggles
-    /// on and stops on the next press. Returns true if the event is consumed.
+    /// on and stops on the next press. While toggled on, typed text joins the
+    /// voice input, and tapping the left Option key switches typing between
+    /// Bopomofo and English. Returns true if the event is consumed.
     private func handleVoiceInput(event: NSEvent, client: Any!) -> Bool {
         let voiceInput = VoiceInputController.shared
+        let isEmpty = state is InputState.Empty || state is InputState.EmptyIgnoringPreviousState
 
-        if event.type == .flagsChanged && event.keyCode == UInt16(kVK_RightOption) {
+        if event.type == .flagsChanged {
             // IMK strips the device-dependent bits (e.g. NX_DEVICERALTKEYMASK)
             // from modifierFlags, so infer press/release from the key code and
             // the Option flag.
             let isDown = event.modifierFlags.contains(.option)
-            switch voiceInput.phase {
-            case .idle:
-                guard isDown,
-                    state is InputState.Empty || state is InputState.EmptyIgnoringPreviousState,
-                    let client = client as? IMKTextInput
-                else {
-                    return false
+            switch Int(event.keyCode) {
+            case kVK_RightOption:
+                switch voiceInput.phase {
+                case .idle:
+                    guard isDown, isEmpty, let client = client as? IMKTextInput else {
+                        return false
+                    }
+                    McBopomofoInputMethodController.voiceInputController = self
+                    voiceInput.start(
+                        client: client,
+                        toggleMode: event.modifierFlags.contains(.command),
+                        preview: { [weak self] text in
+                            self?.previewVoiceInput(text)
+                        },
+                        completion: { text in
+                            McBopomofoInputMethodController.commitVoiceInput(text)
+                        })
+                case .recording:
+                    if !voiceInput.isToggleMode || isDown {
+                        finishVoiceRecording(client: client)
+                    }
+                case .processing:
+                    break
                 }
-                McBopomofoInputMethodController.voiceInputController = self
-                voiceInput.start(
-                    client: client,
-                    toggleMode: event.modifierFlags.contains(.command),
-                    preview: { [weak self] text in
-                        self?.previewVoiceInput(text)
-                    },
-                    completion: { text in
-                        McBopomofoInputMethodController.commitVoiceInput(text)
-                    })
                 return true
-            case .recording:
-                if !voiceInput.isToggleMode || isDown {
-                    voiceInput.finishRecording()
+            case kVK_Option where isTypingIntoVoiceInput:
+                // A tap of the left Option key: pressed and released with no
+                // other key in between.
+                if isDown {
+                    isLeftOptionTapPending = true
+                } else if isLeftOptionTapPending {
+                    isLeftOptionTapPending = false
+                    if isEmpty {
+                        voiceInput.toggleTypingLanguage()
+                    }
                 }
                 return true
-            case .processing:
-                return true
+            default:
+                return false
             }
         }
 
         guard event.type == .keyDown && voiceInput.phase != .idle else {
             return false
         }
+        isLeftOptionTapPending = false
         let keyCode = Int(event.keyCode)
-        if keyCode == kVK_Escape {
-            voiceInput.cancel()
+        let isEnter = keyCode == kVK_Return || keyCode == kVK_ANSI_KeypadEnter
+
+        if voiceInput.phase == .processing {
+            // Enter commits the preview as is; Esc cancels; other keys are
+            // ignored.
+            if keyCode == kVK_Escape {
+                voiceInput.cancel()
+            } else if isEnter {
+                voiceInput.commitPreview()
+            }
             return true
         }
-        let isEnter = keyCode == kVK_Return || keyCode == kVK_ANSI_KeypadEnter
-        if voiceInput.phase == .recording {
-            switch keyCode {
-            case kVK_UpArrow:
-                voiceInput.adjustPolishLevel(by: 1)
-                return true
-            case kVK_DownArrow:
-                voiceInput.adjustPolishLevel(by: -1)
-                return true
-            default:
-                break
-            }
-            if voiceInput.isToggleMode {
-                // Enter finishes; other keys are ignored so they don't mix
-                // with the preview.
-                if isEnter {
-                    voiceInput.finishRecording()
-                }
-                return true
-            }
+
+        // Recording. While composing, keys go to the key handler as usual.
+        if !isEmpty {
+            return false
+        }
+        switch keyCode {
+        case kVK_Escape:
+            voiceInput.cancel()
+            return true
+        case kVK_UpArrow:
+            voiceInput.adjustPolishLevel(by: 1)
+            return true
+        case kVK_DownArrow:
+            voiceInput.adjustPolishLevel(by: -1)
+            return true
+        default:
+            break
+        }
+        if !voiceInput.isToggleMode {
             // Right Option is being used as a modifier (e.g. Option + key),
             // not for talking.
             voiceInput.cancel()
             return false
         }
-        // Processing: Enter commits the preview as is; other keys are ignored.
         if isEnter {
-            voiceInput.commitPreview()
+            finishVoiceRecording(client: client)
+            return true
         }
-        return true
+        if keyCode == kVK_Delete {
+            voiceInput.deleteBackwardTypedText()
+            return true
+        }
+        if !event.modifierFlags.intersection([.command, .control]).isEmpty {
+            return true
+        }
+        if voiceInput.isTypingEnglish {
+            if let characters = event.characters, !characters.isEmpty,
+                characters.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) })
+            {
+                voiceInput.append(typedText: characters)
+            }
+            return true
+        }
+        // Bopomofo: the key handler composes, and committed text joins the
+        // voice input.
+        return false
+    }
+
+    /// Finishes a recording, first adding what is being composed.
+    private func finishVoiceRecording(client: Any!) {
+        if isTypingIntoVoiceInput && state is InputState.NotEmpty {
+            commitComposition(client)
+        }
+        VoiceInputController.shared.finishRecording()
+    }
+
+    /// Whether keys are being typed into a toggle-mode recording.
+    private var isTypingIntoVoiceInput: Bool {
+        let voiceInput = VoiceInputController.shared
+        return McBopomofoInputMethodController.voiceInputController === self
+            && voiceInput.phase == .recording && voiceInput.isToggleMode
+    }
+
+    /// The voice input shown before the composing buffer while typing during
+    /// a toggle-mode recording.
+    private var voiceInputPrefix: String {
+        isTypingIntoVoiceInput ? VoiceInputController.shared.previewText : ""
+    }
+
+    /// Sets the composing buffer as marked text, after the voice input in
+    /// progress if any.
+    fileprivate func setComposingMarkedText(
+        _ string: Any, selectionRange: NSRange, client: IMKTextInput
+    ) {
+        let prefix = voiceInputPrefix
+        guard !prefix.isEmpty else {
+            client.setMarkedText(
+                string, selectionRange: selectionRange,
+                replacementRange: NSMakeRange(NSNotFound, NSNotFound))
+            return
+        }
+        let text = NSMutableAttributedString(
+            string: prefix,
+            attributes: [
+                .underlineStyle: NSUnderlineStyle.single.rawValue, .markedClauseSegment: 0,
+            ])
+        if let attributed = string as? NSAttributedString {
+            text.append(attributed)
+        } else if let plain = string as? String {
+            text.append(
+                NSAttributedString(
+                    string: plain,
+                    attributes: [
+                        .underlineStyle: NSUnderlineStyle.single.rawValue,
+                        .markedClauseSegment: 1,
+                    ]))
+        }
+        let offset = (prefix as NSString).length
+        client.setMarkedText(
+            text,
+            selectionRange: NSMakeRange(selectionRange.location + offset, selectionRange.length),
+            replacementRange: NSMakeRange(NSNotFound, NSNotFound))
     }
 
     /// Shows the voice input in progress as marked text.
@@ -504,6 +615,8 @@ extension McBopomofoInputMethodController {
             let client = currentClient as? IMKTextInput,
             state is InputState.Empty || state is InputState.EmptyIgnoringPreviousState
         else {
+            // While composing, the preview is refreshed with the composing
+            // buffer.
             return
         }
         let length = (text as NSString).length
@@ -605,6 +718,11 @@ extension McBopomofoInputMethodController {
         if buffer.isEmpty {
             return
         }
+        // Text typed during a toggle-mode recording joins the voice input.
+        if isTypingIntoVoiceInput {
+            VoiceInputController.shared.append(typedText: buffer)
+            return
+        }
         (client as? IMKTextInput)?.insertText(
             buffer, replacementRange: NSRange(location: NSNotFound, length: NSNotFound))
     }
@@ -649,9 +767,8 @@ extension McBopomofoInputMethodController {
         if let previous = previous as? InputState.NotEmpty {
             commit(text: previous.composingBuffer, client: client)
         }
-        client.setMarkedText(
-            "", selectionRange: NSMakeRange(0, 0),
-            replacementRange: NSMakeRange(NSNotFound, NSNotFound))
+        setComposingMarkedText(
+            "", selectionRange: NSMakeRange(0, 0), client: client)
     }
 
     private func handle(
@@ -664,9 +781,8 @@ extension McBopomofoInputMethodController {
             return
         }
 
-        client.setMarkedText(
-            "", selectionRange: NSMakeRange(0, 0),
-            replacementRange: NSMakeRange(NSNotFound, NSNotFound))
+        setComposingMarkedText(
+            "", selectionRange: NSMakeRange(0, 0), client: client)
     }
 
     private func handle(state: InputState.Committing, previous: InputState, client: Any?) {
@@ -681,9 +797,8 @@ extension McBopomofoInputMethodController {
         if !poppedText.isEmpty {
             commit(text: poppedText, client: client)
         }
-        client.setMarkedText(
-            "", selectionRange: NSMakeRange(0, 0),
-            replacementRange: NSMakeRange(NSNotFound, NSNotFound))
+        setComposingMarkedText(
+            "", selectionRange: NSMakeRange(0, 0), client: client)
     }
 
     private func handle(state: InputState.Inputting, previous: InputState, client: Any?) {
@@ -696,9 +811,8 @@ extension McBopomofoInputMethodController {
 
         // the selection range is where the cursor is, with the length being 0 and replacement range NSNotFound,
         // i.e. the client app needs to take care of where to put this composing buffer
-        client.setMarkedText(
-            state.attributedString, selectionRange: NSMakeRange(Int(state.cursorIndex), 0),
-            replacementRange: NSMakeRange(NSNotFound, NSNotFound))
+        setComposingMarkedText(
+            state.attributedString, selectionRange: NSMakeRange(Int(state.cursorIndex), 0), client: client)
         if !state.tooltip.isEmpty {
             show(
                 tooltip: state.tooltip, composingBuffer: state.composingBuffer,
@@ -715,9 +829,8 @@ extension McBopomofoInputMethodController {
 
         // the selection range is where the cursor is, with the length being 0 and replacement range NSNotFound,
         // i.e. the client app needs to take care of where to put this composing buffer
-        client.setMarkedText(
-            state.attributedString, selectionRange: NSMakeRange(Int(state.cursorIndex), 0),
-            replacementRange: NSMakeRange(NSNotFound, NSNotFound))
+        setComposingMarkedText(
+            state.attributedString, selectionRange: NSMakeRange(Int(state.cursorIndex), 0), client: client)
 
         if state.tooltip.isEmpty {
             hideTooltip()
@@ -737,9 +850,8 @@ extension McBopomofoInputMethodController {
 
         // the selection range is where the cursor is, with the length being 0 and replacement range NSNotFound,
         // i.e. the client app needs to take care of where to put this composing buffer
-        client.setMarkedText(
-            state.attributedString, selectionRange: NSMakeRange(Int(state.cursorIndex), 0),
-            replacementRange: NSMakeRange(NSNotFound, NSNotFound))
+        setComposingMarkedText(
+            state.attributedString, selectionRange: NSMakeRange(Int(state.cursorIndex), 0), client: client)
         show(candidateWindowWith: state, client: client)
     }
 
@@ -755,15 +867,11 @@ extension McBopomofoInputMethodController {
         // i.e. the client app needs to take care of where to put this composing buffer
         switch previousState {
         case let previousState as InputState.ChoosingCandidate:
-            client.setMarkedText(
-                previousState.attributedString,
-                selectionRange: NSMakeRange(Int(previousState.cursorIndex), 0),
-                replacementRange: NSMakeRange(NSNotFound, NSNotFound))
+            setComposingMarkedText(
+                previousState.attributedString, selectionRange: NSMakeRange(Int(previousState.cursorIndex), 0), client: client)
         case let previousState as InputState.Inputting:
-            client.setMarkedText(
-                previousState.attributedString,
-                selectionRange: NSMakeRange(Int(previousState.cursorIndex), 0),
-                replacementRange: NSMakeRange(NSNotFound, NSNotFound))
+            setComposingMarkedText(
+                previousState.attributedString, selectionRange: NSMakeRange(Int(previousState.cursorIndex), 0), client: client)
         default:
             break
         }
@@ -778,9 +886,8 @@ extension McBopomofoInputMethodController {
             gCurrentCandidateController?.visible = false
             return
         }
-        client.setMarkedText(
-            "", selectionRange: NSMakeRange(0, 0),
-            replacementRange: NSMakeRange(NSNotFound, NSNotFound))
+        setComposingMarkedText(
+            "", selectionRange: NSMakeRange(0, 0), client: client)
         show(candidateWindowWith: state, client: client)
     }
 
@@ -800,14 +907,11 @@ extension McBopomofoInputMethodController {
             return
         }
 
-        client.setMarkedText(
-            composingBuffer,
-            selectionRange: NSMakeRange(
+        setComposingMarkedText(
+            composingBuffer, selectionRange: NSMakeRange(
                 (composingBuffer as NSString).length,
                 0
-            ),
-            replacementRange: NSMakeRange(NSNotFound, NSNotFound)
-        )
+            ), client: client)
         if candidateCount > 0 {
             show(candidateWindowWith: state, client: client)
         }
@@ -839,15 +943,11 @@ extension McBopomofoInputMethodController {
 
         switch previousState {
         case let previousState as InputState.ChoosingCandidate:
-            client.setMarkedText(
-                previousState.attributedString,
-                selectionRange: NSMakeRange(Int(previousState.cursorIndex), 0),
-                replacementRange: NSMakeRange(NSNotFound, NSNotFound))
+            setComposingMarkedText(
+                previousState.attributedString, selectionRange: NSMakeRange(Int(previousState.cursorIndex), 0), client: client)
         case let previousState as InputState.Marking:
-            client.setMarkedText(
-                previousState.attributedString,
-                selectionRange: NSMakeRange(Int(previousState.cursorIndex), 0),
-                replacementRange: NSMakeRange(NSNotFound, NSNotFound))
+            setComposingMarkedText(
+                previousState.attributedString, selectionRange: NSMakeRange(Int(previousState.cursorIndex), 0), client: client)
         default:
             break
         }
@@ -866,15 +966,11 @@ extension McBopomofoInputMethodController {
         // i.e. the client app needs to take care of where to put this composing buffer
         switch previousState {
         case let previousState as InputState.ChoosingCandidate:
-            client.setMarkedText(
-                previousState.attributedString,
-                selectionRange: NSMakeRange(Int(previousState.cursorIndex), 0),
-                replacementRange: NSMakeRange(NSNotFound, NSNotFound))
+            setComposingMarkedText(
+                previousState.attributedString, selectionRange: NSMakeRange(Int(previousState.cursorIndex), 0), client: client)
         case let previousState as InputState.Marking:
-            client.setMarkedText(
-                previousState.attributedString,
-                selectionRange: NSMakeRange(Int(previousState.cursorIndex), 0),
-                replacementRange: NSMakeRange(NSNotFound, NSNotFound))
+            setComposingMarkedText(
+                previousState.attributedString, selectionRange: NSMakeRange(Int(previousState.cursorIndex), 0), client: client)
         default:
             break
         }
@@ -907,9 +1003,8 @@ extension McBopomofoInputMethodController {
         if let previous = previous as? InputState.NotEmpty {
             commit(text: previous.composingBuffer, client: client)
         }
-        client.setMarkedText(
-            composingBuffer, selectionRange: NSMakeRange(composingBuffer.utf16.count, 0),
-            replacementRange: NSMakeRange(NSNotFound, NSNotFound))
+        setComposingMarkedText(
+            composingBuffer, selectionRange: NSMakeRange(composingBuffer.utf16.count, 0), client: client)
     }
 
     private func handleStateWithSimpleCandidateWindow(
@@ -927,9 +1022,8 @@ extension McBopomofoInputMethodController {
         }
         // the selection range is where the cursor is, with the length being 0 and replacement range NSNotFound,
         // i.e. the client app needs to take care of where to put this composing buffer
-        client.setMarkedText(
-            "", selectionRange: NSMakeRange(0, 0),
-            replacementRange: NSMakeRange(NSNotFound, NSNotFound))
+        setComposingMarkedText(
+            "", selectionRange: NSMakeRange(0, 0), client: client)
         show(candidateWindowWith: state, client: client)
     }
 
@@ -1043,6 +1137,7 @@ extension McBopomofoInputMethodController {
                 cursor -= 1
             }
         }
+        cursor += (voiceInputPrefix as NSString).length
 
         while lineHeightRect.origin.x == 0 && lineHeightRect.origin.y == 0 && cursor >= 0 {
             (client as? IMKTextInput)?.attributes(
@@ -1072,6 +1167,7 @@ extension McBopomofoInputMethodController {
         if cursor == composingBuffer.count && cursor != 0 {
             cursor -= 1
         }
+        cursor += (voiceInputPrefix as NSString).length
 
         var isVerticalMode = false
         while lineHeightRect.origin.x == 0 && lineHeightRect.origin.y == 0 && cursor >= 0 {

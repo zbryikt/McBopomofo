@@ -270,5 +270,7 @@
 "No sound was recorded. Please check the input device in System Settings > Sound." = "No sound was recorded. Please check the input device in System Settings > Sound.";
 "Listening... (Right Option to finish, Esc to cancel)" = "Listening... (Right Option to finish, Esc to cancel)";
 "Polish level %d %@ (↑↓ to adjust)" = "Polish level %d %@ (↑↓ to adjust)";
+"Typing: English (Left Option to switch)" = "Typing: English (Left Option to switch)";
+"Typing: Bopomofo (Left Option to switch)" = "Typing: Bopomofo (Left Option to switch)";
 "Voice input failed: " = "Voice input failed: ";
 "Voice input copied to the clipboard" = "Voice input copied to the clipboard";

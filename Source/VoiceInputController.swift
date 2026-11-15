@@ -66,7 +66,26 @@ class VoiceInputController: NSObject {
     private var preview: ((String) -> Void)?
     private var completion: ((String) -> Void)?
     /// The text currently shown in the preview.
-    private var previewText = ""
+    private(set) var previewText = ""
+
+    /// In toggle mode, text typed while talking is placed between the audio
+    /// items it splits the recording into.
+    private enum Segment {
+        case audio(Int)
+        case typed(String)
+    }
+    private var segments: [Segment] = []
+    private var committedAudioItems = 0
+    private var previewItems: [String] = []
+    private var lastTypedTime = Date.distantPast
+    /// Speech captured since the last split of the audio, in seconds.
+    private var voicedSinceSplit: TimeInterval = 0
+    /// Audio with less speech than this is dropped rather than transcribed,
+    /// as ASR models make things up on (near) silence.
+    private let minimumVoicedDuration: TimeInterval = 0.25
+    /// Whether keys typed in toggle mode are taken as English letters rather
+    /// than Bopomofo.
+    private(set) var isTypingEnglish = false
 
     /// Recordings shorter than this are treated as an accidental key tap.
     private let minimumDuration: TimeInterval = 0.4
@@ -146,11 +165,12 @@ class VoiceInputController: NSObject {
                     }
                     previewTranscriber = previewSource
                 }
-                previewSource.onUpdate = { [weak self] text in
+                previewSource.onUpdate = { [weak self] items in
                     guard let self = self, self.phase == .recording else {
                         return
                     }
-                    self.show(preview: Self.toTraditional(text))
+                    self.previewItems = items.map(Self.toTraditional)
+                    self.showComposedPreview()
                 }
                 transcriber.start()
                 previewTranscriber?.start()
@@ -158,10 +178,11 @@ class VoiceInputController: NSObject {
             }
             recordedAudio = Data()
             let capture = AudioCapture()
-            capture.onAudio = { [weak self] data in
+            capture.onAudio = { [weak self] data, voiced in
                 guard let self = self, self.phase == .recording else {
                     return
                 }
+                self.voicedSinceSplit += voiced
                 if let transcriber = self.transcriber {
                     transcriber.append(audio: data)
                     self.previewTranscriber?.append(audio: data)
@@ -213,7 +234,12 @@ class VoiceInputController: NSObject {
             return
         }
         NSLog("McBopomofo voice input: duration %.1fs, peak %.1f dB", duration, capture.peakPower)
-        if capture.peakPower < silenceThreshold {
+        NSLog("McBopomofo voice input: voiced %.1fs, noise floor %.1f dB, %d audio items",
+            capture.voicedDuration, capture.noiseFloor,
+            committedAudioItems)
+        if (capture.peakPower < silenceThreshold || capture.voicedDuration < minimumVoicedDuration)
+            && !hasTypedText
+        {
             cancel()
             NotifierController.notify(
                 message: NSLocalizedString(
@@ -225,30 +251,38 @@ class VoiceInputController: NSObject {
         phase = .processing
         showStatus(NSLocalizedString("Recognizing...", comment: ""))
 
+        let isSilent =
+            capture.peakPower < silenceThreshold || capture.voicedDuration < minimumVoicedDuration
+        splitAudio()
+
         let appName = appName
         let transcriber = transcriber
         let audio = recordedAudio
+        let segments = segments
         task = Task { @MainActor [weak self] in
             do {
-                var transcript: String
-                if let transcriber = transcriber {
-                    transcript = Self.toTraditional(try await transcriber.finish())
+                var items: [String] = []
+                if isSilent {
+                    // Only typed text.
+                } else if let transcriber = transcriber {
+                    items = try await transcriber.finish().map(Self.toTraditional)
                 } else {
-                    transcript = try await Self.transcribe(
-                        audio: AudioCapture.wavData(pcm: audio))
+                    items = [try await Self.transcribe(audio: AudioCapture.wavData(pcm: audio))]
                 }
                 try Task.checkCancellation()
                 // Some models echo the prompt back when they hear nothing useful.
-                if transcript.trimmingCharacters(in: .whitespacesAndNewlines) == Self.asrPrompt {
-                    transcript = ""
+                items = items.map {
+                    $0.trimmingCharacters(in: .whitespacesAndNewlines) == Self.asrPrompt ? "" : $0
                 }
+                let transcript = Self.compose(segments: segments, items: items, tagTyped: false)
                 self?.show(preview: transcript)
                 var text = transcript
                 let level = Preferences.voiceInputPolishLevel
                 if !Preferences.voiceInputLLMModel.isEmpty && level > 0 && !transcript.isEmpty {
                     self?.showStatus(NSLocalizedString("Polishing... (Enter to skip)", comment: ""))
                     text = try await Self.refine(
-                        transcript: transcript, level: level, appName: appName
+                        transcript: Self.compose(segments: segments, items: items, tagTyped: true),
+                        level: level, appName: appName
                     ) { partial in
                         self?.show(preview: partial)
                     }
@@ -271,6 +305,100 @@ class VoiceInputController: NSObject {
         Preferences.voiceInputPolishLevel = min(
             max(Preferences.voiceInputPolishLevel + delta, 0), 10)
         showRecordingStatus()
+    }
+
+    /// Adds text typed while recording in toggle mode.
+    func append(typedText text: String) {
+        guard phase == .recording, isToggleMode, !text.isEmpty else {
+            return
+        }
+        // Split the audio here so that what was said before the typing is
+        // placed before the text. Keystrokes in quick succession stay together.
+        if Date().timeIntervalSince(lastTypedTime) >= 1.5 {
+            splitAudio()
+        }
+        lastTypedTime = Date()
+        if case .typed(let previous)? = segments.last {
+            segments[segments.count - 1] = .typed(previous + text)
+        } else {
+            segments.append(.typed(text))
+        }
+        showComposedPreview()
+    }
+
+    /// Deletes the last typed character, if the text ends with typed text.
+    func deleteBackwardTypedText() {
+        guard phase == .recording, case .typed(let previous)? = segments.last else {
+            return
+        }
+        let remaining = String(previous.dropLast())
+        if remaining.isEmpty {
+            segments.removeLast()
+        } else {
+            segments[segments.count - 1] = .typed(remaining)
+        }
+        showComposedPreview()
+    }
+
+    /// Switches typing in toggle mode between Bopomofo and English.
+    func toggleTypingLanguage() {
+        guard phase == .recording, isToggleMode else {
+            return
+        }
+        isTypingEnglish.toggle()
+        showRecordingStatus()
+    }
+
+    /// Ends the current audio item: transcribed if it has speech, dropped
+    /// otherwise.
+    private func splitAudio() {
+        guard let transcriber = transcriber else {
+            return
+        }
+        NSLog("McBopomofo voice input: split with %.2fs of speech", voicedSinceSplit)
+        if voicedSinceSplit >= minimumVoicedDuration
+            && transcriber.uncommittedBytes >= RealtimeTranscriber.minimumCommitBytes
+        {
+            transcriber.commit()
+            previewTranscriber?.commit()
+            segments.append(.audio(committedAudioItems))
+            committedAudioItems += 1
+        } else {
+            transcriber.clear()
+            previewTranscriber?.clear()
+        }
+        voicedSinceSplit = 0
+    }
+
+    private var hasTypedText: Bool {
+        segments.contains {
+            if case .typed = $0 { return true }
+            return false
+        }
+    }
+
+    private func showComposedPreview() {
+        show(preview: Self.compose(segments: segments, items: previewItems, tagTyped: false))
+    }
+
+    /// Joins audio transcripts and typed text in order. Items after the last
+    /// segment (the audio still being recorded) go at the end.
+    private static func compose(segments: [Segment], items: [String], tagTyped: Bool) -> String {
+        var text = ""
+        var nextItem = 0
+        for segment in segments {
+            switch segment {
+            case .audio(let index):
+                text += index < items.count ? items[index] : ""
+                nextItem = index + 1
+            case .typed(let typed):
+                text += tagTyped ? "<typed>\(typed)</typed>" : typed
+            }
+        }
+        if nextItem < items.count {
+            text += items[nextItem...].joined()
+        }
+        return text
     }
 
     /// Commits what is shown in the preview without waiting for the
@@ -338,6 +466,12 @@ class VoiceInputController: NSObject {
         previewTranscriber?.close()
         previewTranscriber = nil
         isToggleMode = false
+        isTypingEnglish = false
+        segments = []
+        committedAudioItems = 0
+        previewItems = []
+        lastTypedTime = .distantPast
+        voicedSinceSplit = 0
         recordedAudio = Data()
         recordingStartTime = nil
         task = nil
@@ -351,14 +485,22 @@ class VoiceInputController: NSObject {
     private func showRecordingStatus() {
         let level = Preferences.voiceInputPolishLevel
         let meter = String(repeating: "■", count: level) + String(repeating: "□", count: 10 - level)
-        let hint = isToggleMode
-            ? NSLocalizedString("Listening... (Right Option to finish, Esc to cancel)", comment: "")
-            : NSLocalizedString("Listening... (release to finish, Esc to cancel)", comment: "")
-        showStatus(
-            hint + "\n"
-                + String(
-                    format: NSLocalizedString("Polish level %d %@ (↑↓ to adjust)", comment: ""),
-                    level, meter))
+        var lines = [
+            isToggleMode
+                ? NSLocalizedString(
+                    "Listening... (Right Option to finish, Esc to cancel)", comment: "")
+                : NSLocalizedString("Listening... (release to finish, Esc to cancel)", comment: ""),
+            String(
+                format: NSLocalizedString("Polish level %d %@ (↑↓ to adjust)", comment: ""),
+                level, meter),
+        ]
+        if isToggleMode {
+            lines.append(
+                isTypingEnglish
+                    ? NSLocalizedString("Typing: English (Left Option to switch)", comment: "")
+                    : NSLocalizedString("Typing: Bopomofo (Left Option to switch)", comment: ""))
+        }
+        showStatus(lines.joined(separator: "\n"))
     }
 
     private func showStatus(_ message: String) {
@@ -394,10 +536,19 @@ class VoiceInputController: NSObject {
 private class AudioCapture {
     static let sampleRate: Double = 24000
 
-    /// Called on the main thread with each chunk of PCM data.
-    var onAudio: ((Data) -> Void)?
+    /// Called on the main thread with each chunk of PCM data and how much of
+    /// it, in seconds, sounds like speech rather than background noise.
+    var onAudio: ((Data, TimeInterval) -> Void)?
     /// The peak level so far, in dBFS. Updated on the main thread.
     private(set) var peakPower: Float = -160
+    /// The total duration that sounds like speech. Updated on the main thread.
+    private(set) var voicedDuration: TimeInterval = 0
+    /// The quietest chunk level so far, taken as the noise floor.
+    private(set) var noiseFloor: Float = 0
+    /// The length of the current run of loud chunks.
+    private var loudRun: TimeInterval = 0
+    /// Speech is a sustained sound; key clicks are loud only briefly.
+    private let minimumSpeechRun: TimeInterval = 0.15
 
     private let engine = AVAudioEngine()
 
@@ -419,11 +570,16 @@ private class AudioCapture {
         input.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) {
             [weak self] buffer, _ in
             var peak: Float = 0
+            var sumOfSquares: Float = 0
             if let samples = buffer.floatChannelData?[0] {
                 for i in 0..<Int(buffer.frameLength) {
                     peak = max(peak, abs(samples[i]))
+                    sumOfSquares += samples[i] * samples[i]
                 }
             }
+            let meanSquare = sumOfSquares / Float(max(buffer.frameLength, 1))
+            let level = meanSquare > 0 ? 10 * log10(meanSquare) : -160
+            let chunkDuration = Double(buffer.frameLength) / inputFormat.sampleRate
 
             let capacity = AVAudioFrameCount(
                 Double(buffer.frameLength) * Self.sampleRate / inputFormat.sampleRate) + 32
@@ -453,7 +609,22 @@ private class AudioCapture {
                     return
                 }
                 self.peakPower = max(self.peakPower, power)
-                self.onAudio?(data)
+                // Speech is well above the noise floor for a while; key clicks
+                // are too short.
+                self.noiseFloor = min(self.noiseFloor, level)
+                var voiced: TimeInterval = 0
+                if level > max(self.noiseFloor + 20, -50) {
+                    let previousRun = self.loudRun
+                    self.loudRun += chunkDuration
+                    if self.loudRun >= self.minimumSpeechRun {
+                        // Count the whole run once it qualifies.
+                        voiced = previousRun >= self.minimumSpeechRun ? chunkDuration : self.loudRun
+                    }
+                } else {
+                    self.loudRun = 0
+                }
+                self.voicedDuration += voiced
+                self.onAudio?(data, voiced)
             }
         }
         engine.prepare()
@@ -500,20 +671,33 @@ private class AudioCapture {
 
 /// Streams audio to the OpenAI Realtime API in a transcription session.
 ///
-/// Turn detection is off: the whole recording is one item, committed when the
-/// key is released. Partial transcripts arrive while talking.
+/// Turn detection is off: audio is split into items only when `commit()` is
+/// called, so that text typed while talking can be placed between them.
+/// Partial transcripts arrive while talking.
 private class RealtimeTranscriber {
-    /// Called on the main thread with the transcript so far.
-    var onUpdate: ((String) -> Void)?
+    /// Called on the main thread with the transcripts so far, one per item.
+    var onUpdate: (([String]) -> Void)?
     /// Called on the main thread when the session fails.
     var onError: ((Error) -> Void)?
 
+    /// The minimum audio the API accepts in a commit: 100 ms of 16-bit PCM.
+    static let minimumCommitBytes = Int(AudioCapture.sampleRate) / 10 * 2
+
     private let socket: URLSessionWebSocketTask
     private let session: [String: Any]
-    private var transcript = ""
-    private var finalTranscript: String?
-    private var finishContinuation: CheckedContinuation<String, Error>?
+    /// Item IDs in the order the items were spoken.
+    private var itemIDs: [String] = []
+    private var transcripts: [String: String] = [:]
+    private var completedItemIDs: Set<String> = []
+    private var committedItemIDs: Set<String> = []
+    /// Items whose audio was cleared; late events for them are ignored.
+    private var discardedItemIDs: Set<String> = []
+    private var commitCount = 0
+    private var finishContinuation: CheckedContinuation<[String], Error>?
     private var closed = false
+
+    /// Audio appended since the last commit, in bytes.
+    private(set) var uncommittedBytes = 0
 
     init(apiKey: String, model: String, prompt: String) {
         var request = URLRequest(
@@ -539,18 +723,35 @@ private class RealtimeTranscriber {
     }
 
     func append(audio: Data) {
+        uncommittedBytes += audio.count
         send(["type": "input_audio_buffer.append", "audio": audio.base64EncodedString()])
     }
 
-    /// Commits the audio and waits for the final transcript.
-    func finish() async throws -> String {
-        if let finalTranscript = finalTranscript {
-            return finalTranscript
-        }
+    /// Ends the current item. The caller makes sure there is enough audio.
+    func commit() {
+        uncommittedBytes = 0
+        commitCount += 1
         send(["type": "input_audio_buffer.commit"])
+    }
+
+    /// Drops the audio since the last commit, and any partial transcript of it.
+    func clear() {
+        uncommittedBytes = 0
+        send(["type": "input_audio_buffer.clear"])
+        for itemID in itemIDs where !committedItemIDs.contains(itemID) {
+            discardedItemIDs.insert(itemID)
+            transcripts[itemID] = nil
+        }
+        itemIDs.removeAll { discardedItemIDs.contains($0) }
+        onUpdate?(orderedTranscripts)
+    }
+
+    /// Waits for the final transcripts of all committed items.
+    func finish() async throws -> [String] {
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 finishContinuation = continuation
+                resolveIfDone()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
                     self?.resolve(.failure(VoiceInputError.message("Transcription timed out")))
                 }
@@ -571,7 +772,17 @@ private class RealtimeTranscriber {
         resolve(.failure(CancellationError()))
     }
 
-    private func resolve(_ result: Result<String, Error>) {
+    private var orderedTranscripts: [String] {
+        itemIDs.map { transcripts[$0] ?? "" }
+    }
+
+    private func resolveIfDone() {
+        if finishContinuation != nil && completedItemIDs.count >= commitCount {
+            resolve(.success(Array(orderedTranscripts.prefix(commitCount))))
+        }
+    }
+
+    private func resolve(_ result: Result<[String], Error>) {
         guard let continuation = finishContinuation else {
             return
         }
@@ -613,6 +824,17 @@ private class RealtimeTranscriber {
         }
     }
 
+    private func track(itemID: String?) -> String? {
+        guard let itemID = itemID, !discardedItemIDs.contains(itemID) else {
+            return nil
+        }
+        if transcripts[itemID] == nil {
+            itemIDs.append(itemID)
+            transcripts[itemID] = ""
+        }
+        return itemID
+    }
+
     private func handle(message: String) {
         guard let data = message.data(using: .utf8),
             let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -621,13 +843,24 @@ private class RealtimeTranscriber {
             return
         }
         switch type {
+        case "input_audio_buffer.committed":
+            if let itemID = track(itemID: event["item_id"] as? String) {
+                committedItemIDs.insert(itemID)
+            }
         case "conversation.item.input_audio_transcription.delta":
-            transcript += event["delta"] as? String ?? ""
-            onUpdate?(transcript)
+            guard let itemID = track(itemID: event["item_id"] as? String) else {
+                return
+            }
+            transcripts[itemID, default: ""] += event["delta"] as? String ?? ""
+            onUpdate?(orderedTranscripts)
         case "conversation.item.input_audio_transcription.completed":
-            let text = event["transcript"] as? String ?? transcript
-            finalTranscript = text
-            resolve(.success(text))
+            guard let itemID = track(itemID: event["item_id"] as? String) else {
+                return
+            }
+            transcripts[itemID] = event["transcript"] as? String ?? transcripts[itemID]
+            completedItemIDs.insert(itemID)
+            onUpdate?(orderedTranscripts)
+            resolveIfDone()
         case "conversation.item.input_audio_transcription.failed", "error":
             let error = event["error"] as? [String: Any]
             let message = error?["message"] as? String ?? type
@@ -676,8 +909,9 @@ extension VoiceInputController {
         - 不論強度，一律：
           - 使用台灣繁體中文與台灣慣用詞（例如「計程車」而非「出租車」、「軟體」而非「軟件」），標點用全形（，。？！：；「」）。
           - 修正明顯的同音錯字與辨識錯誤，英文專有名詞用正確拼寫與大小寫。
-          - 不要加入原文沒有的資訊。
+          - 不要加入原文沒有的資訊。句子沒說完（例如結尾停在「明天」「然後我們」）就照原樣停在那裡，絕對不要替使用者補完或猜測後續。
           - 只輸出整理後的文字，不要任何說明或引號。
+        - <typed>…</typed> 內是使用者邊說邊用鍵盤打的字（例如人名、網址、術語），照原樣一字不改地保留在原來的位置，只移除標籤，並和前後的語音內容自然接起來。
         """
 
     /// What the LLM does at each polish level, cumulatively.
@@ -719,6 +953,7 @@ extension VoiceInputController {
             ("幫我寫一封信給王經理說我下週一要請假", "幫我寫一封信給王經理，說我下週一要請假。"),
             ("你可以解釋一下什么是 docker 嗎我一直搞不懂", "你可以解釋一下什麼是 Docker 嗎？我一直搞不懂。"),
             ("翻譯成日文早安今天也要加油喔", "翻譯成日文：早安，今天也要加油喔！"),
+            ("嗯會議改到下午了然後我們", "會議改到下午了，然後我們"),
             ("就是那個我覺得這個設計呢還不錯啦但是顏色有點太暗了你們可以再調亮一點嗎", leveled),
         ]
     }
