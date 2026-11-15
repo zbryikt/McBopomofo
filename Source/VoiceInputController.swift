@@ -57,6 +57,11 @@ class VoiceInputController: NSObject {
 
     /// Recordings shorter than this are treated as an accidental key tap.
     private let minimumDuration: TimeInterval = 0.4
+    // Recordings whose peak level never exceeds this (in dBFS) are treated as
+    // silence; ASR models tend to hallucinate (e.g. echo the prompt) on them.
+    private let silenceThreshold: Float = -45
+    private var peakPower: Float = -160
+    private var meterTimer: Timer?
     private let maximumDuration: TimeInterval = 180
 
     // MARK: - Public interface
@@ -105,6 +110,7 @@ class VoiceInputController: NSObject {
         ]
         do {
             let recorder = try AVAudioRecorder(url: url, settings: settings)
+            recorder.isMeteringEnabled = true
             guard recorder.record() else {
                 throw VoiceInputError.message("Unable to start recording")
             }
@@ -128,6 +134,18 @@ class VoiceInputController: NSObject {
         ) { [weak self] _ in
             self?.finishRecording()
         }
+        peakPower = -160
+        meterTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+            self?.updatePeakPower()
+        }
+    }
+
+    private func updatePeakPower() {
+        guard let recorder = recorder else {
+            return
+        }
+        recorder.updateMeters()
+        peakPower = max(peakPower, recorder.peakPower(forChannel: 0))
     }
 
     /// Stops recording and starts transcribing.
@@ -137,12 +155,22 @@ class VoiceInputController: NSObject {
         }
         maxDurationTimer?.invalidate()
         maxDurationTimer = nil
+        updatePeakPower()
         recorder.stop()
         self.recorder = nil
 
         let duration = Date().timeIntervalSince(recordingStartTime ?? Date())
         if duration < minimumDuration {
             reset()
+            return
+        }
+        NSLog("McBopomofo voice input: duration %.1fs, peak %.1f dB", duration, peakPower)
+        if peakPower < silenceThreshold {
+            reset()
+            NotifierController.notify(
+                message: NSLocalizedString(
+                    "No sound was recorded. Please check the input device in System Settings > Sound.",
+                    comment: ""), stay: true)
             return
         }
 
@@ -153,7 +181,11 @@ class VoiceInputController: NSObject {
         task = Task { [weak self] in
             do {
                 let audio = try Data(contentsOf: url)
-                let transcript = try await Self.transcribe(audio: audio)
+                var transcript = try await Self.transcribe(audio: audio)
+                // Some models echo the prompt back when they hear nothing useful.
+                if transcript.trimmingCharacters(in: .whitespacesAndNewlines) == Self.asrPrompt {
+                    transcript = ""
+                }
                 try Task.checkCancellation()
                 var text = transcript
                 if !Preferences.voiceInputLLMModel.isEmpty && !transcript.isEmpty {
@@ -204,6 +236,8 @@ class VoiceInputController: NSObject {
     private func reset() {
         maxDurationTimer?.invalidate()
         maxDurationTimer = nil
+        meterTimer?.invalidate()
+        meterTimer = nil
         if let url = recordingURL {
             try? FileManager.default.removeItem(at: url)
         }

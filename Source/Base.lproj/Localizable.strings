@@ -265,5 +265,6 @@
 "Listening... (release to finish, Esc to cancel)" = "Listening... (release to finish, Esc to cancel)";
 "Recognizing..." = "Recognizing...";
 "Polishing..." = "Polishing...";
+"No sound was recorded. Please check the input device in System Settings > Sound." = "No sound was recorded. Please check the input device in System Settings > Sound.";
 "Voice input failed: " = "Voice input failed: ";
 "Voice input copied to the clipboard" = "Voice input copied to the clipboard";

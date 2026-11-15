@@ -265,5 +265,6 @@
 "Listening... (release to finish, Esc to cancel)" = "聆聽中…（放開結束，Esc 取消）";
 "Recognizing..." = "辨識中…";
 "Polishing..." = "整理中…";
+"No sound was recorded. Please check the input device in System Settings > Sound." = "沒有錄到聲音，請到「系統設定 > 聲音」檢查輸入裝置。";
 "Voice input failed: " = "語音輸入失敗：";
 "Voice input copied to the clipboard" = "語音輸入結果已複製到剪貼簿";
