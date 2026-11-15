@@ -266,5 +266,7 @@
 "Recognizing..." = "辨識中…";
 "Polishing... (Enter to skip)" = "整理中…（Enter 略過）";
 "No sound was recorded. Please check the input device in System Settings > Sound." = "沒有錄到聲音，請到「系統設定 > 聲音」檢查輸入裝置。";
+"Listening... (Right Option to finish, Esc to cancel)" = "聆聽中…（按右 Option 結束，Esc 取消）";
+"Polish level %d %@ (↑↓ to adjust)" = "潤飾強度 %d %@（↑↓ 調整）";
 "Voice input failed: " = "語音輸入失敗：";
 "Voice input copied to the clipboard" = "語音輸入結果已複製到剪貼簿";

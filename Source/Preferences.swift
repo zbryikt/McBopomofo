@@ -63,6 +63,8 @@ private let kVoiceInputAPIKeyFileKey = "VoiceInputAPIKeyFile"
 private let kVoiceInputASRProviderKey = "VoiceInputASRProvider"
 private let kVoiceInputASRModelKey = "VoiceInputASRModel"
 private let kVoiceInputLLMModelKey = "VoiceInputLLMModel"
+private let kVoiceInputPreviewModelKey = "VoiceInputPreviewModel"
+private let kVoiceInputPolishLevelKey = "VoiceInputPolishLevel"
 private let kUseCustomUserPhraseLocation = "UseCustomUserPhraseLocation"
 private let kCustomUserPhraseLocation = "CustomUserPhraseLocation"
 
@@ -254,6 +256,8 @@ class Preferences: NSObject {
             kVoiceInputASRProviderKey,
             kVoiceInputASRModelKey,
             kVoiceInputLLMModelKey,
+            kVoiceInputPreviewModelKey,
+            kVoiceInputPolishLevelKey,
         ]
     }
 
@@ -544,13 +548,23 @@ extension Preferences {
     @UserDefault(key: kVoiceInputASRProviderKey, defaultValue: "openai-realtime")
     static var voiceInputASRProvider: String
 
-    /// The speech recognition model. Empty to use the provider's default.
+    /// The speech recognition model that produces the final transcript. Empty
+    /// to use the provider's default.
     @UserDefault(key: kVoiceInputASRModelKey, defaultValue: "")
     static var voiceInputASRModel: String
 
     /// The OpenAI model used to polish the transcript. Empty to skip polishing.
-    @UserDefault(key: kVoiceInputLLMModelKey, defaultValue: "gpt-4.1")
+    @UserDefault(key: kVoiceInputLLMModelKey, defaultValue: "gpt-5.4-mini")
     static var voiceInputLLMModel: String
+
+    /// With "openai-realtime", the fast streaming model whose partial
+    /// transcript is previewed while talking. Empty to skip the preview.
+    @UserDefault(key: kVoiceInputPreviewModelKey, defaultValue: "gpt-live-transcribe")
+    static var voiceInputPreviewModel: String
+
+    /// How much the LLM polishes the transcript, from 0 (not at all) to 10.
+    @UserDefault(key: kVoiceInputPolishLevelKey, defaultValue: 5)
+    static var voiceInputPolishLevel: Int
 }
 
 @objc class UserPhraseLocationHelper: NSObject {

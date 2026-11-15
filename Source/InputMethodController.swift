@@ -418,23 +418,29 @@ class McBopomofoInputMethodController: IMKInputController {
 
 extension McBopomofoInputMethodController {
 
-    /// Handles push-to-talk: holding the right Option key records, releasing
-    /// it transcribes. Returns true if the event is consumed.
+    /// Handles voice input. Holding the right Option key records, releasing
+    /// it transcribes; with Command held when pressing it, recording toggles
+    /// on and stops on the next press. Returns true if the event is consumed.
     private func handleVoiceInput(event: NSEvent, client: Any!) -> Bool {
         let voiceInput = VoiceInputController.shared
 
         if event.type == .flagsChanged && event.keyCode == UInt16(kVK_RightOption) {
             // IMK strips the device-dependent bits (e.g. NX_DEVICERALTKEYMASK)
-            // from modifierFlags, so infer press/release from the key code:
-            // each flagsChanged for the right Option key toggles its state.
-            let isDown = voiceInput.phase == .idle && event.modifierFlags.contains(.option)
-            if isDown
-                && (state is InputState.Empty || state is InputState.EmptyIgnoringPreviousState),
-                let client = client as? IMKTextInput
-            {
+            // from modifierFlags, so infer press/release from the key code and
+            // the Option flag.
+            let isDown = event.modifierFlags.contains(.option)
+            switch voiceInput.phase {
+            case .idle:
+                guard isDown,
+                    state is InputState.Empty || state is InputState.EmptyIgnoringPreviousState,
+                    let client = client as? IMKTextInput
+                else {
+                    return false
+                }
                 McBopomofoInputMethodController.voiceInputController = self
                 voiceInput.start(
                     client: client,
+                    toggleMode: event.modifierFlags.contains(.command),
                     preview: { [weak self] text in
                         self?.previewVoiceInput(text)
                     },
@@ -442,33 +448,54 @@ extension McBopomofoInputMethodController {
                         McBopomofoInputMethodController.commitVoiceInput(text)
                     })
                 return true
-            }
-            if voiceInput.phase == .recording {
-                voiceInput.finishRecording()
+            case .recording:
+                if !voiceInput.isToggleMode || isDown {
+                    voiceInput.finishRecording()
+                }
+                return true
+            case .processing:
                 return true
             }
-            return false
         }
 
-        if event.type == .keyDown && voiceInput.phase != .idle {
-            if event.keyCode == UInt16(kVK_Escape) {
-                voiceInput.cancel()
-                return true
-            }
-            if voiceInput.phase == .recording {
-                // Right Option is being used as a modifier (e.g. Option + key),
-                // not for talking.
-                voiceInput.cancel()
-                return false
-            }
-            // Processing: Enter commits the preview as is; other keys are
-            // ignored so they don't mix with the preview.
-            if event.keyCode == UInt16(kVK_Return) || event.keyCode == UInt16(kVK_ANSI_KeypadEnter) {
-                voiceInput.commitPreview()
-            }
+        guard event.type == .keyDown && voiceInput.phase != .idle else {
+            return false
+        }
+        let keyCode = Int(event.keyCode)
+        if keyCode == kVK_Escape {
+            voiceInput.cancel()
             return true
         }
-        return false
+        let isEnter = keyCode == kVK_Return || keyCode == kVK_ANSI_KeypadEnter
+        if voiceInput.phase == .recording {
+            switch keyCode {
+            case kVK_UpArrow:
+                voiceInput.adjustPolishLevel(by: 1)
+                return true
+            case kVK_DownArrow:
+                voiceInput.adjustPolishLevel(by: -1)
+                return true
+            default:
+                break
+            }
+            if voiceInput.isToggleMode {
+                // Enter finishes; other keys are ignored so they don't mix
+                // with the preview.
+                if isEnter {
+                    voiceInput.finishRecording()
+                }
+                return true
+            }
+            // Right Option is being used as a modifier (e.g. Option + key),
+            // not for talking.
+            voiceInput.cancel()
+            return false
+        }
+        // Processing: Enter commits the preview as is; other keys are ignored.
+        if isEnter {
+            voiceInput.commitPreview()
+        }
+        return true
     }
 
     /// Shows the voice input in progress as marked text.
