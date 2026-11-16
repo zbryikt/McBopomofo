@@ -131,7 +131,8 @@ class VoiceInputController: NSObject {
     ///     talking and polishing; an empty string clears the preview.
     ///   - completion: Called on the main thread with the final text.
     func start(
-        client: IMKTextInput, toggleMode: Bool = false, preview: @escaping (Preview) -> Void,
+        client: IMKTextInput, toggleMode: Bool = false, typesEnglish: Bool = false,
+        preview: @escaping (Preview) -> Void,
         completion: @escaping (String) -> Void
     ) {
         guard phase == .idle else {
@@ -255,6 +256,7 @@ class VoiceInputController: NSObject {
         self.preview = preview
         self.completion = completion
         isToggleMode = toggleMode
+        isTypingEnglish = typesEnglish
         recordingStartTime = Date()
         appName = Self.applicationName(for: client)
         tooltipOrigin = Self.cursorOrigin(for: client)
@@ -1220,11 +1222,14 @@ private final class VoicePanel {
         switch style {
         case .stable:
             attributes[.foregroundColor] = NSColor.labelColor
-        case .partial, .pending:
-            attributes[.foregroundColor] = NSColor.tertiaryLabelColor
-        case .typed:
+        case .partial:
+            // Still being recognized: may change.
             attributes[.foregroundColor] = NSColor.systemBlue
-            attributes[.backgroundColor] = NSColor.systemBlue.withAlphaComponent(0.15)
+        case .pending:
+            attributes[.foregroundColor] = NSColor.secondaryLabelColor
+        case .typed:
+            attributes[.foregroundColor] = NSColor.systemPurple
+            attributes[.backgroundColor] = NSColor.systemPurple.withAlphaComponent(0.15)
         case .caret:
             attributes[.foregroundColor] = NSColor.systemOrange
         case .deleted:
