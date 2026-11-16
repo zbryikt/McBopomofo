@@ -1545,14 +1545,21 @@ extension McBopomofoInputMethodController {
 // MARK: - Mode Badge
 
 /// A small label kept above the cursor, showing whether keys type Chinese
-/// or English.
+/// or English, with a dot next to it for Caps Lock.
 private final class ModeBadge {
     static let shared = ModeBadge()
 
     private var window: NSPanel?
     private let label = NSTextField(labelWithString: "")
+    private let labelView = NSView()
+    private let capsLockDot = NSView()
     private var timer: Timer?
-    private let size = NSSize(width: 22, height: 16)
+    private let labelSize = NSSize(width: 22, height: 16)
+    private let dotDiameter: CGFloat = 6
+    private let dotSpacing: CGFloat = 3
+    private var size: NSSize {
+        NSSize(width: labelSize.width + dotSpacing + dotDiameter, height: labelSize.height)
+    }
 
     private func makeWindow() -> NSPanel {
         let panel = NSPanel(
@@ -1565,13 +1572,21 @@ private final class ModeBadge {
         panel.hidesOnDeactivate = false
         panel.ignoresMouseEvents = true
         let view = NSView(frame: NSRect(origin: .zero, size: size))
-        view.wantsLayer = true
-        view.layer?.cornerRadius = 4
+        labelView.frame = NSRect(origin: .zero, size: labelSize)
+        labelView.wantsLayer = true
+        labelView.layer?.cornerRadius = 4
         label.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
         label.alignment = .center
         label.textColor = .white
-        label.frame = NSRect(x: 0, y: 1, width: size.width, height: size.height - 2)
-        view.addSubview(label)
+        label.frame = NSRect(x: 0, y: 1, width: labelSize.width, height: labelSize.height - 2)
+        labelView.addSubview(label)
+        view.addSubview(labelView)
+        capsLockDot.frame = NSRect(
+            x: labelSize.width + dotSpacing, y: (labelSize.height - dotDiameter) / 2,
+            width: dotDiameter, height: dotDiameter)
+        capsLockDot.wantsLayer = true
+        capsLockDot.layer?.cornerRadius = dotDiameter / 2
+        view.addSubview(capsLockDot)
         panel.contentView = view
         return panel
     }
@@ -1583,9 +1598,12 @@ private final class ModeBadge {
         let panel = window ?? makeWindow()
         window = panel
         label.stringValue = english ? "EN" : "中"
-        panel.contentView?.layer?.backgroundColor = (english
+        labelView.layer?.backgroundColor = (english
             ? NSColor.systemGray : NSColor(srgbRed: 0.78, green: 0.52, blue: 0.12, alpha: 1))
             .withAlphaComponent(0.85).cgColor
+        let capsLock = NSEvent.modifierFlags.contains(.capsLock)
+        capsLockDot.layer?.backgroundColor =
+            (capsLock ? NSColor.systemGreen : NSColor.systemGray.withAlphaComponent(0.6)).cgColor
         panel.setFrameOrigin(NSPoint(x: line.minX - 2, y: line.maxY + 2))
         panel.orderFront(nil)
         timer?.invalidate()
