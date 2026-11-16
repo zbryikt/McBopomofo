@@ -78,4 +78,11 @@ for stray in \
 done
 "$LSREGISTER" -f "$INSTALLED_APP"
 
-echo "==> Done. Switch to another input source and back to load the new build."
+# Apps lose their connection to the stopped input method until it is selected
+# again. Do so for the frontmost app.
+BUNDLE_ID="$(defaults read "$INSTALLED_APP/Contents/Info" CFBundleIdentifier)"
+echo "==> Reselecting the input source"
+sleep 1
+swift "$SCRIPT_DIR/reselect-input-source.swift" "$BUNDLE_ID" || true
+
+echo "==> Done. In other apps already open, switch to another input source and back."
