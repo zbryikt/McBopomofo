@@ -68,21 +68,31 @@ class KeyHandlerInput: NSObject {
         super.init()
     }
 
-    @objc init(event: NSEvent, isVerticalMode: Bool) {
-        inputText = event.characters
+    /// With `ignoresCapsLock`, keys are read as if Caps Lock were off, so that
+    /// they still type Bopomofo.
+    @objc init(event: NSEvent, isVerticalMode: Bool, ignoresCapsLock: Bool = false) {
+        var characters = event.characters
+        var modifierFlags = event.modifierFlags
+        if ignoresCapsLock && modifierFlags.contains(.capsLock) {
+            modifierFlags.remove(.capsLock)
+            if !modifierFlags.contains(.shift) {
+                characters = characters?.lowercased()
+            }
+        }
+        inputText = characters
         inputTextIgnoringModifiers = event.charactersIgnoringModifiers
         keyCode = event.keyCode
-        flags = event.modifierFlags
+        flags = modifierFlags
         useVerticalMode = isVerticalMode
         let charCode: UInt16 = {
-            guard let inputText = event.characters, inputText.count > 0 else {
+            guard let inputText = characters, inputText.count > 0 else {
                 return 0
             }
             let first = inputText[inputText.startIndex].utf16.first!
             return first
         }()
         self.charCode = charCode
-        emacsKey = EmacsKeyHelper.detect(charCode: charCode, flags: event.modifierFlags)
+        emacsKey = EmacsKeyHelper.detect(charCode: charCode, flags: modifierFlags)
         cursorForwardKey = useVerticalMode ? .down : .right
         cursorBackwardKey = useVerticalMode ? .up : .left
         extraChooseCandidateKey = useVerticalMode ? .left : .down
@@ -118,6 +128,10 @@ class KeyHandlerInput: NSObject {
     @objc var isCapsLockOn: Bool {
         flags.contains([.capsLock])
     }
+
+    /// Whether keys type English, switched with the mode toggle key rather
+    /// than Caps Lock.
+    @objc var isEnglishMode = false
 
     @objc var isNumericPad: Bool {
         flags.contains([.numericPad])

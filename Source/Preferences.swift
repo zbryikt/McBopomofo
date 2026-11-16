@@ -60,6 +60,7 @@ private let kRepeatedPunctuationToSelectCandidateEnabledKey =
     "RepeatedPunctuationToSelectCandidateEnabled"
 private let kModeTipEnabledKey = "ModeTipEnabled"
 private let kModeTipPersistentKey = "ModeTipPersistent"
+private let kModeToggleKeyKey = "ModeToggleKey"
 private let kVoiceInputEnabledKey = "VoiceInputEnabled"
 private let kVoiceInputAPIKeyFileKey = "VoiceInputAPIKeyFile"
 private let kVoiceInputASRProviderKey = "VoiceInputASRProvider"
@@ -258,6 +259,7 @@ class Preferences: NSObject {
             kCustomUserPhraseLocation,
             kModeTipEnabledKey,
             kModeTipPersistentKey,
+            kModeToggleKeyKey,
             kVoiceInputEnabledKey,
             kVoiceInputAPIKeyFileKey,
             kVoiceInputASRProviderKey,
@@ -543,12 +545,23 @@ extension Preferences {
     @UserDefault(key: kSwitchInputSourceUponCommandKeyPressInputSourceIDKey, defaultValue: "com.apple.keylayout.ABC")
     static var switchInputSourceUponCommandKeyPressInputSourceID: String
 
-    /// Briefly shows Chinese or English (Caps Lock) next to the cursor when the
-    /// input method is activated or Caps Lock is toggled.
+    /// The key that, tapped alone, switches typing between Chinese and
+    /// English: "rightShift", "rightCommand", or "capsLock" (as in McBopomofo,
+    /// where Caps Lock on types lowercase English). With the others, Caps Lock
+    /// types capital letters in English mode and is ignored in Chinese mode.
+    @UserDefault(key: kModeToggleKeyKey, defaultValue: "rightCommand")
+    static var modeToggleKey: String
+
+    @objc static var capsLockSwitchesToEnglish: Bool {
+        modeToggleKey == "capsLock"
+    }
+
+    /// Briefly shows Chinese or English next to the cursor when the input
+    /// method is activated or the mode is switched.
     @UserDefault(key: kModeTipEnabledKey, defaultValue: true)
     static var modeTipEnabled: Bool
 
-    /// Keeps a small Chinese / English badge below the cursor instead.
+    /// Keeps a small Chinese / English badge above the cursor instead.
     @UserDefault(key: kModeTipPersistentKey, defaultValue: false)
     static var modeTipPersistent: Bool
 

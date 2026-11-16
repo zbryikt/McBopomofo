@@ -66,6 +66,11 @@ class McBopomofoInputMethodController: IMKInputController {
     private static weak var voiceInputController: McBopomofoInputMethodController?
     // Whether the left Option key is pressed with no other key since.
     private var isLeftOptionTapPending = false
+    // Whether the mode toggle key is pressed with no other key since.
+    private var isModeToggleTapPending = false
+    // Whether keys type English, switched by tapping the mode toggle key. Shared
+    // by all apps, like Caps Lock.
+    private static var isEnglishMode = false
 
     // MARK: - IMKInputController methods
 
@@ -261,6 +266,13 @@ class McBopomofoInputMethodController: IMKInputController {
             }
         }
 
+        // Any other key in between makes it a key combination, not a tap,
+        // including keys voice input takes (e.g. Cmd + right Option).
+        if event.type == .keyDown
+            || (event.type == .flagsChanged && Int(event.keyCode) != Self.modeToggleKey.code)
+        {
+            isModeToggleTapPending = false
+        }
         if Preferences.voiceInputEnabled && handleVoiceInput(event: event, client: client) {
             if event.type == .keyDown {
                 refreshVoiceInputPlaceholder()
@@ -273,8 +285,8 @@ class McBopomofoInputMethodController: IMKInputController {
             return false
         }
 
-        if event.type == .flagsChanged && event.keyCode == UInt16(kVK_CapsLock) {
-            showModeTip(capsLock: event.modifierFlags.contains(.capsLock))
+        if event.type == .flagsChanged {
+            handleModeToggleKey(event: event, client: client)
         }
 
         if event.type == .flagsChanged {
@@ -324,7 +336,12 @@ class McBopomofoInputMethodController: IMKInputController {
             forCharacterIndex: 0, lineHeightRectangle: &textFrame)
         let useVerticalMode =
             (attributes?["IMKTextOrientation"] as? NSNumber)?.intValue == 0 || false
-        let input = KeyHandlerInput(event: event, isVerticalMode: useVerticalMode)
+        // Unless Caps Lock switches to English, it only matters in English mode.
+        let switchesWithCapsLock = Preferences.capsLockSwitchesToEnglish
+        let input = KeyHandlerInput(
+            event: event, isVerticalMode: useVerticalMode,
+            ignoresCapsLock: !switchesWithCapsLock && !Self.isEnglishMode)
+        input.isEnglishMode = Self.isEnglishMode && !switchesWithCapsLock
 
         let result = keyHandler.handle(input: input, state: state) { newState in
             self.handle(state: newState, client: client)
@@ -349,17 +366,65 @@ class McBopomofoInputMethodController: IMKInputController {
         return result
     }
 
+    // MARK: - Chinese / English Mode
+
+    /// Switches between Chinese and English when the mode toggle key is
+    /// tapped: pressed and released with no other key in between.
+    private func handleModeToggleKey(event: NSEvent, client: Any!) {
+        let keyCode = Int(event.keyCode)
+        if Preferences.capsLockSwitchesToEnglish {
+            if keyCode == kVK_CapsLock {
+                showModeTip()
+            }
+            return
+        }
+        let toggleKey = Self.modeToggleKey
+        guard keyCode == toggleKey.code else {
+            return
+        }
+        // IMK strips the device-dependent bits, so a press is told from a
+        // release by the flag (which stays on while the left key is held).
+        if event.modifierFlags.contains(toggleKey.flag) && !isModeToggleTapPending {
+            isModeToggleTapPending = true
+            return
+        }
+        guard isModeToggleTapPending else {
+            return
+        }
+        isModeToggleTapPending = false
+        if VoiceInputController.shared.phase != .idle {
+            // Typing during voice input has its own language.
+            VoiceInputController.shared.toggleTypingLanguage()
+            return
+        }
+        // Finish what is being composed before switching.
+        commitComposition(client)
+        Self.isEnglishMode.toggle()
+        showModeTip()
+    }
+
+    private static var modeToggleKey: (code: Int, flag: NSEvent.ModifierFlags) {
+        Preferences.modeToggleKey == "rightShift"
+            ? (kVK_RightShift, .shift) : (kVK_RightCommand, .command)
+    }
+
+    /// Whether keys type English, either switched with the mode toggle key or,
+    /// as in McBopomofo, with Caps Lock on.
+    private var typesEnglish: Bool {
+        Preferences.capsLockSwitchesToEnglish
+            ? NSEvent.modifierFlags.contains(.capsLock) : Self.isEnglishMode
+    }
+
     // MARK: - Mode Tip
 
     private static let modeTip = TooltipController()
     private static var modeTipGeneration = 0
 
-    /// Briefly shows next to the cursor whether keys type Chinese or, with
-    /// Caps Lock on, English.
-    private func showModeTip(capsLock: Bool = NSEvent.modifierFlags.contains(.capsLock)) {
+    /// Briefly shows next to the cursor whether keys type Chinese or English.
+    private func showModeTip() {
         if Preferences.modeTipPersistent {
             McBopomofoInputMethodController.modeBadgeOwner = self
-            updateModeBadge(capsLock: capsLock)
+            updateModeBadge()
             return
         }
         guard Preferences.modeTipEnabled, currentClient != nil,
@@ -373,7 +438,7 @@ class McBopomofoInputMethodController: IMKInputController {
         guard lineHeightRect.origin != .zero else {
             return
         }
-        let tip = capsLock ? "EN" : "中"
+        let tip = typesEnglish ? "EN" : "中"
         Self.modeTipGeneration += 1
         let generation = Self.modeTipGeneration
         Self.modeTip.show(tooltip: tip, at: lineHeightRect.origin)
@@ -388,7 +453,7 @@ class McBopomofoInputMethodController: IMKInputController {
     private static weak var modeBadgeOwner: McBopomofoInputMethodController?
 
     /// Moves the persistent mode badge to the cursor, and shows the mode.
-    private func updateModeBadge(capsLock: Bool = NSEvent.modifierFlags.contains(.capsLock)) {
+    private func updateModeBadge() {
         guard Preferences.modeTipPersistent,
             McBopomofoInputMethodController.modeBadgeOwner === self,
             let client = currentClient as? IMKTextInput
@@ -405,7 +470,7 @@ class McBopomofoInputMethodController: IMKInputController {
             ModeBadge.shared.hide()
             return
         }
-        ModeBadge.shared.show(english: capsLock, above: lineHeightRect) { [weak self] in
+        ModeBadge.shared.show(english: typesEnglish, above: lineHeightRect) { [weak self] in
             // Polled: the input method is not told when the cursor moves
             // with the mouse.
             self?.updateModeBadge()
@@ -553,6 +618,7 @@ extension McBopomofoInputMethodController {
                     voiceInput.start(
                         client: client,
                         toggleMode: event.modifierFlags.contains(.command),
+                        typesEnglish: typesEnglish,
                         preview: { [weak self] text in
                             self?.previewVoiceInput(text)
                         },
@@ -1460,7 +1526,7 @@ extension McBopomofoInputMethodController {
 // MARK: - Mode Badge
 
 /// A small label kept above the cursor, showing whether keys type Chinese
-/// or English (Caps Lock).
+/// or English.
 private final class ModeBadge {
     static let shared = ModeBadge()
 

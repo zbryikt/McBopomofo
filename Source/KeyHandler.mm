@@ -381,7 +381,7 @@ InputMode InputModePlainBopomofo = @"io.github.zbryikt.inputmethod.DaMaiVoice.Pl
     // Caps Lock processing : if Caps Lock is on, temporarily disable bopomofo.
     if (charCode == 8 || charCode == 13 || input.isAbsorbedArrowKey || input.isExtraChooseCandidateKey || input.isCursorForward || input.isCursorBackward) {
         // do nothing if backspace is pressed -- we ignore the key
-    } else if (input.isCapsLockOn) {
+    } else if (input.isCapsLockOn || input.isEnglishMode) {
         // process all possible combination, we hope.
         [self clear];
         InputStateEmpty *emptyState = [[InputStateEmpty alloc] init];
@@ -398,7 +398,10 @@ InputMode InputModePlainBopomofo = @"io.github.zbryikt.inputmethod.DaMaiVoice.Pl
         }
 
         // when shift is pressed, don't do further processing, since it outputs capital letter anyway.
-        InputStateCommitting *committingState = [[InputStateCommitting alloc] initWithPoppedText:input.inputText.lowercaseString];
+        // When Caps Lock switches to English, it types lowercase; otherwise it
+        // types capital letters as usual.
+        NSString *text = Preferences.capsLockSwitchesToEnglish ? input.inputText.lowercaseString : input.inputText;
+        InputStateCommitting *committingState = [[InputStateCommitting alloc] initWithPoppedText:text];
         stateCallback(committingState);
         stateCallback(emptyState);
         return YES;

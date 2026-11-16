@@ -886,6 +886,31 @@ class KeyHandlerBopomofoTests: XCTestCase {
         }
     }
 
+    func testInputtingNihaoIgnoringCapsLock() {
+        let associatedPhrasesEnabled = Preferences.associatedPhrasesEnabled
+        Preferences.associatedPhrasesEnabled = false
+        defer {
+            Preferences.associatedPhrasesEnabled = associatedPhrasesEnabled
+        }
+
+        var state: InputState = InputState.Empty()
+        for key in Array("SU3CL3").map({ String($0) }) {
+            let event = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: .capsLock, timestamp: 0,
+                windowNumber: 0, context: nil, characters: key,
+                charactersIgnoringModifiers: key.lowercased(), isARepeat: false, keyCode: 0)!
+            let input = KeyHandlerInput(event: event, isVerticalMode: false, ignoresCapsLock: true)
+            handler.handle(input: input, state: state) { newState in
+                state = newState
+            } errorCallback: {
+            }
+        }
+        XCTAssertTrue(state is InputState.Inputting, "\(state)")
+        if let state = state as? InputState.Inputting {
+            XCTAssertEqual(state.composingBuffer, "你好")
+        }
+    }
+
     func testInputtingTianKong() {
         let associatedPhrasesEnabled = Preferences.associatedPhrasesEnabled
         Preferences.associatedPhrasesEnabled = false
