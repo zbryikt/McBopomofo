@@ -66,8 +66,8 @@ class McBopomofoInputMethodController: IMKInputController {
     private static weak var voiceInputController: McBopomofoInputMethodController?
     // Whether the left Option key is pressed with no other key since.
     private var isLeftOptionTapPending = false
-    // Whether the mode toggle key is pressed with no other key since.
-    private var isModeToggleTapPending = false
+    // The mode toggle key pressed with no other key since, and when.
+    private var modeToggleTap: (keyCode: Int, time: Date)?
     // Whether keys type English, switched by tapping the mode toggle key. Shared
     // by all apps, like Caps Lock.
     private static var isEnglishMode = false
@@ -268,10 +268,11 @@ class McBopomofoInputMethodController: IMKInputController {
 
         // Any other key in between makes it a key combination, not a tap,
         // including keys voice input takes (e.g. Cmd + right Option).
-        if event.type == .keyDown
-            || (event.type == .flagsChanged && Int(event.keyCode) != Self.modeToggleKey.code)
+        if event.type == .keyDown || event.type == .leftMouseDown
+            || (event.type == .flagsChanged
+                && !Self.modeToggleKey.codes.contains(Int(event.keyCode)))
         {
-            isModeToggleTapPending = false
+            modeToggleTap = nil
         }
         if Preferences.voiceInputEnabled && handleVoiceInput(event: event, client: client) {
             if event.type == .keyDown {
@@ -379,19 +380,24 @@ class McBopomofoInputMethodController: IMKInputController {
             return
         }
         let toggleKey = Self.modeToggleKey
-        guard keyCode == toggleKey.code else {
+        guard toggleKey.codes.contains(keyCode) else {
             return
         }
         // IMK strips the device-dependent bits, so a press is told from a
-        // release by the flag (which stays on while the left key is held).
-        if event.modifierFlags.contains(toggleKey.flag) && !isModeToggleTapPending {
-            isModeToggleTapPending = true
+        // release by the flag (which stays on while another such key is held).
+        guard let tap = modeToggleTap, tap.keyCode == keyCode else {
+            // Pressing a second toggle key cancels the tap.
+            modeToggleTap =
+                event.modifierFlags.contains(toggleKey.flag) && modeToggleTap == nil
+                ? (keyCode, Date()) : nil
             return
         }
-        guard isModeToggleTapPending else {
+        modeToggleTap = nil
+        // Held longer: likely a key combination the app was not told of, such
+        // as Cmd + Tab or Cmd + click.
+        guard Date().timeIntervalSince(tap.time) < Self.modeToggleTapDuration else {
             return
         }
-        isModeToggleTapPending = false
         if VoiceInputController.shared.phase != .idle {
             // Typing during voice input has its own language.
             VoiceInputController.shared.toggleTypingLanguage()
@@ -403,9 +409,17 @@ class McBopomofoInputMethodController: IMKInputController {
         showModeTip()
     }
 
-    private static var modeToggleKey: (code: Int, flag: NSEvent.ModifierFlags) {
-        Preferences.modeToggleKey == "rightShift"
-            ? (kVK_RightShift, .shift) : (kVK_RightCommand, .command)
+    private static let modeToggleTapDuration: TimeInterval = 0.15
+
+    private static var modeToggleKey: (codes: [Int], flag: NSEvent.ModifierFlags) {
+        switch Preferences.modeToggleKey {
+        case "rightShift":
+            return ([kVK_RightShift], .shift)
+        case "rightCommand":
+            return ([kVK_RightCommand], .command)
+        default:
+            return ([kVK_Command, kVK_RightCommand], .command)
+        }
     }
 
     /// Whether keys type English, either switched with the mode toggle key or,
