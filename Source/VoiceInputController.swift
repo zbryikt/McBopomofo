@@ -2015,11 +2015,18 @@ private class RealtimeTranscriber: StreamingTranscriber {
 
 enum VoiceInputError: LocalizedError {
     case message(String)
+    case missingAPIKey(name: String, file: String)
 
     var errorDescription: String? {
         switch self {
         case .message(let message):
             return message
+        case .missingAPIKey(let name, let file):
+            return String(
+                format: NSLocalizedString(
+                    "%@ was not found. Add a line \"%@=your key\" to %@, then try again. See the README for details.",
+                    comment: ""),
+                name, name, (file as NSString).abbreviatingWithTildeInPath)
         }
     }
 }
@@ -2299,7 +2306,7 @@ extension VoiceInputController {
                 }
             }
         }
-        throw VoiceInputError.message("\(name) not found in \(path)")
+        throw VoiceInputError.missingAPIKey(name: name, file: path)
     }
 }
 

@@ -280,4 +280,5 @@
 "Suggesting..." = "Suggesting...";
 "No suggestions for the selection" = "No suggestions for the selection";
 "Voice input failed: " = "Voice input failed: ";
+"%@ was not found. Add a line \"%@=your key\" to %@, then try again. See the README for details." = "%@ was not found. Add a line \"%@=your key\" to %@, then try again. See the README for details.";
 "Voice input copied to the clipboard" = "Voice input copied to the clipboard";

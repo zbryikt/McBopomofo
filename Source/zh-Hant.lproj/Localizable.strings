@@ -280,4 +280,5 @@
 "Suggesting..." = "建議中…";
 "No suggestions for the selection" = "這段沒有建議";
 "Voice input failed: " = "語音輸入失敗：";
+"%@ was not found. Add a line \"%@=your key\" to %@, then try again. See the README for details." = "找不到 %1$@。請在 %3$@ 加入一行「%2$@=你的 key」後再試一次，詳見 README。";
 "Voice input copied to the clipboard" = "語音輸入結果已複製到剪貼簿";

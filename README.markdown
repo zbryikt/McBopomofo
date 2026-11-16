@@ -1,5 +1,73 @@
 # OpenVanilla McBopomofo 小麥注音輸入法
 
+## 大麥語音（DaMai Voice）
+
+這個分支在小麥注音上加入實驗性的語音輸入：用 ElevenLabs Scribe 即時辨識語音，再用 OpenAI 模型潤飾成文字。
+
+### 開啟語音輸入
+
+語音輸入預設是關閉的。開啟方式：
+
+```
+defaults write io.github.zbryikt.inputmethod.DaMaiVoice VoiceInputEnabled -bool true
+```
+
+第一次說話時，macOS 會詢問是否允許使用麥克風。
+
+### 設定 API key
+
+在 `~/Library/Application Support/DaMaiVoice/voice-input.env` 建立檔案，每行一個 `KEY=VALUE`：
+
+```
+ELEVENLABS_API_KEY=你的 ElevenLabs key
+OPENAI_API_KEY=你的 OpenAI key
+```
+
+- `ELEVENLABS_API_KEY`：語音辨識，必要。缺少時按下說話鍵不會錄音，只會出現提示。
+- `OPENAI_API_KEY`：潤飾與校正時的候選字。缺少時仍可辨識，但潤飾會失敗，辨識的文字會保留下來供校正後送出；把潤飾強度設為 0 就不會用到。
+
+想用其他位置的檔案：
+
+```
+defaults write io.github.zbryikt.inputmethod.DaMaiVoice VoiceInputAPIKeyFile ~/path/to/file
+```
+
+API key 只從這個檔案讀取，不會寫進 log。語音與文字會送往上述服務，詳見 `context/project/tasks/todo/privacy.md`。
+
+### 操作
+
+| 按鍵 | 作用 |
+|---|---|
+| 按住右 Option | 說話，放開後辨識並潤飾 |
+| Cmd + 右 Option | 開始說話，再按一次右 Option 或 Enter 結束；說話時可以同時打字 |
+| 說話時 ↑ / ↓ | 調整潤飾強度（0 不潤飾，10 最多） |
+| 說話時單按左 Option | 切換打字用注音或英文 |
+| Esc | 取消 |
+| 校正時 ← / → / ↑ / ↓ | 移動與調整選取範圍；加 Shift 增減範圍，加 Cmd 微調位置 |
+| 校正時右 Option | 列出選取範圍的候選字，按數字選字 |
+| 校正時 Cmd+Z / Shift+Cmd+Z | 復原 / 重做 |
+| 校正時 Enter | 送出 |
+
+### 中英切換
+
+單按右 Cmd 或左 Option 切換中文與英文，游標上方會顯示「中」或「EN」。按住超過 0.15 秒或與其他鍵一起按時不會切換。中文模式下不論 Caps Lock 開關都輸入注音；英文模式下 Caps Lock 照常切換大小寫。
+
+改用其他鍵（以逗號分隔，可用 `leftOption`、`leftCommand`、`rightCommand`、`rightShift`；設為 `capsLock` 則回到小麥原本用 Caps Lock 切換的方式）：
+
+```
+defaults write io.github.zbryikt.inputmethod.DaMaiVoice ModeToggleKey leftOption
+```
+
+常駐顯示「中／EN」與 Caps Lock 狀態（綠點為開）：
+
+```
+defaults write io.github.zbryikt.inputmethod.DaMaiVoice ModeTipPersistent -bool true
+```
+
+### 開發
+
+`Source/Tools/dev-install.sh` 會 build 並直接安裝到 `~/Library/Input Methods`。第一次安裝新的 bundle ID 仍需執行安裝程式一次。
+
 ## 系統需求
 
 小麥注音輸入法可以在 macOS 13 以上版本運作。如果您要自行編譯小麥注音輸入法，或參與開發，您需要：
