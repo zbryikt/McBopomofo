@@ -270,7 +270,7 @@ class McBopomofoInputMethodController: IMKInputController {
         // including keys voice input takes (e.g. Cmd + right Option).
         if event.type == .keyDown || event.type == .leftMouseDown
             || (event.type == .flagsChanged
-                && !Self.modeToggleKey.codes.contains(Int(event.keyCode)))
+                && Self.modeToggleKeys[Int(event.keyCode)] == nil)
         {
             modeToggleTap = nil
         }
@@ -379,8 +379,7 @@ class McBopomofoInputMethodController: IMKInputController {
             }
             return
         }
-        let toggleKey = Self.modeToggleKey
-        guard toggleKey.codes.contains(keyCode) else {
+        guard let flag = Self.modeToggleKeys[keyCode] else {
             return
         }
         // IMK strips the device-dependent bits, so a press is told from a
@@ -388,7 +387,7 @@ class McBopomofoInputMethodController: IMKInputController {
         guard let tap = modeToggleTap, tap.keyCode == keyCode else {
             // Pressing a second toggle key cancels the tap.
             modeToggleTap =
-                event.modifierFlags.contains(toggleKey.flag) && modeToggleTap == nil
+                event.modifierFlags.contains(flag) && modeToggleTap == nil
                 ? (keyCode, Date()) : nil
             return
         }
@@ -411,15 +410,21 @@ class McBopomofoInputMethodController: IMKInputController {
 
     private static let modeToggleTapDuration: TimeInterval = 0.15
 
-    private static var modeToggleKey: (codes: [Int], flag: NSEvent.ModifierFlags) {
-        switch Preferences.modeToggleKey {
-        case "rightShift":
-            return ([kVK_RightShift], .shift)
-        case "rightCommand":
-            return ([kVK_RightCommand], .command)
-        default:
-            return ([kVK_Command, kVK_RightCommand], .command)
+    /// The mode toggle keys by key code, with the modifier flag each sets.
+    private static var modeToggleKeys: [Int: NSEvent.ModifierFlags] {
+        let keys: [String: (code: Int, flag: NSEvent.ModifierFlags)] = [
+            "leftOption": (kVK_Option, .option),
+            "leftCommand": (kVK_Command, .command),
+            "rightCommand": (kVK_RightCommand, .command),
+            "rightShift": (kVK_RightShift, .shift),
+        ]
+        var result: [Int: NSEvent.ModifierFlags] = [:]
+        for name in Preferences.modeToggleKey.split(separator: ",") {
+            if let key = keys[name.trimmingCharacters(in: .whitespaces)] {
+                result[key.code] = key.flag
+            }
         }
+        return result
     }
 
     /// Whether keys type English, either switched with the mode toggle key or,

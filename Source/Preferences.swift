@@ -546,11 +546,11 @@ extension Preferences {
     static var switchInputSourceUponCommandKeyPressInputSourceID: String
 
     /// The key that, tapped alone, switches typing between Chinese and
-    /// English: "command" (either Command key), "rightCommand", "rightShift",
-    /// or "capsLock" (as in McBopomofo,
+    /// English: a comma-separated list of "leftOption", "leftCommand",
+    /// "rightCommand" and "rightShift", or "capsLock" (as in McBopomofo,
     /// where Caps Lock on types lowercase English). With the others, Caps Lock
     /// types capital letters in English mode and is ignored in Chinese mode.
-    @UserDefault(key: kModeToggleKeyKey, defaultValue: "command")
+    @UserDefault(key: kModeToggleKeyKey, defaultValue: "rightCommand,leftOption")
     static var modeToggleKey: String
 
     @objc static var capsLockSwitchesToEnglish: Bool {
