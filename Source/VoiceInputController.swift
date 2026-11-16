@@ -366,10 +366,12 @@ class VoiceInputController: NSObject {
                     try Task.checkCancellation()
                 }
                 self?.finish(with: text)
-            } catch is CancellationError {
-                // Cancelled by the user.
             } catch {
-                self?.fail(with: error)
+                // When cancelled by the user (e.g. Enter to skip polishing),
+                // the request being made fails with URLError.cancelled.
+                if !Task.isCancelled && !(error is CancellationError) {
+                    self?.fail(with: error)
+                }
             }
         }
     }
@@ -552,14 +554,16 @@ class VoiceInputController: NSObject {
         return text
     }
 
-    /// Commits what is shown in the preview without waiting for the
-    /// transcription or polishing to finish.
+    /// Commits the transcript without waiting for the transcription or
+    /// polishing to finish.
     func commitPreview() {
         guard phase == .processing else {
             return
         }
         task?.cancel()
-        finish(with: previewText)
+        // While polishing, the preview is the partly polished text; skip
+        // polishing and keep the whole transcript instead.
+        finish(with: polishSource ?? previewText)
     }
 
     /// Cancels the ongoing recording or processing.
@@ -960,13 +964,17 @@ class VoiceInputController: NSObject {
             return
         }
         NSLog("McBopomofo voice input: \(error)")
+        if phase == .reviewing {
+            // Recording and polishing are over; keep the result being checked.
+            return
+        }
         task?.cancel()
         NotifierController.notify(
             message: NSLocalizedString("Voice input failed: ", comment: "")
                 + error.localizedDescription, stay: true)
         // Keep what was recognized so far, to be checked and committed.
         let recognized = previewText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if phase != .reviewing && !recognized.isEmpty {
+        if !recognized.isEmpty {
             startReview(recognized)
             return
         }
