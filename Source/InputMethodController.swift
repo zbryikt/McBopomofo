@@ -66,8 +66,19 @@ class McBopomofoInputMethodController: IMKInputController {
     private static weak var voiceInputController: McBopomofoInputMethodController?
     // Whether the left Option key is pressed with no other key since.
     private var isLeftOptionTapPending = false
+    // Whether the right Option key was released since voice input started.
+    // Chrome sends the key press again after the placeholder is marked.
+    private var isRightOptionReleasedSinceVoiceStart = false
+    // When the right Option key was last released during voice input.
+    private var rightOptionReleaseTimestamp: TimeInterval = 0
+    // Chrome sends a modifier key event again a few milliseconds after the
+    // input method handles it; a person takes longer than this to press again.
+    private static let repeatedModifierInterval: TimeInterval = 0.05
     // The mode toggle key pressed with no other key since, and when.
     private var modeToggleTap: (keyCode: Int, time: Date)?
+    // When another modifier key last changed. Apps such as Chrome send it
+    // again, so a mode toggle key pressed with it may look like a tap.
+    private var otherModifierTime = Date.distantPast
     // Whether keys type English, switched by tapping the mode toggle key. Shared
     // by all apps, like Caps Lock.
     private static var isEnglishMode = false
@@ -273,6 +284,9 @@ class McBopomofoInputMethodController: IMKInputController {
                 && Self.modeToggleKeys[Int(event.keyCode)] == nil)
         {
             modeToggleTap = nil
+            if event.type == .flagsChanged {
+                otherModifierTime = Date()
+            }
         }
         if Preferences.voiceInputEnabled && handleVoiceInput(event: event, client: client) {
             if event.type == .keyDown {
@@ -394,7 +408,9 @@ class McBopomofoInputMethodController: IMKInputController {
         modeToggleTap = nil
         // Held longer: likely a key combination the app was not told of, such
         // as Cmd + Tab or Cmd + click.
-        guard Date().timeIntervalSince(tap.time) < Self.modeToggleTapDuration else {
+        guard Date().timeIntervalSince(tap.time) < Self.modeToggleTapDuration,
+            Date().timeIntervalSince(otherModifierTime) > Self.modeToggleQuietInterval
+        else {
             return
         }
         if VoiceInputController.shared.phase != .idle {
@@ -409,6 +425,8 @@ class McBopomofoInputMethodController: IMKInputController {
     }
 
     private static let modeToggleTapDuration: TimeInterval = 0.15
+    /// How long after another modifier key a tap is not taken as one.
+    private static let modeToggleQuietInterval: TimeInterval = 0.5
 
     /// The mode toggle keys by key code, with the modifier flag each sets.
     private static var modeToggleKeys: [Int: NSEvent.ModifierFlags] {
@@ -634,6 +652,7 @@ extension McBopomofoInputMethodController {
                         return false
                     }
                     McBopomofoInputMethodController.voiceInputController = self
+                    isRightOptionReleasedSinceVoiceStart = false
                     voiceInput.start(
                         client: client,
                         toggleMode: event.modifierFlags.contains(.command),
@@ -646,7 +665,20 @@ extension McBopomofoInputMethodController {
                         })
                     refreshVoiceInputPlaceholder()
                 case .recording:
-                    if !voiceInput.isToggleMode || isDown {
+                    if !isDown {
+                        isRightOptionReleasedSinceVoiceStart = true
+                        rightOptionReleaseTimestamp = event.timestamp
+                    } else if event.timestamp - rightOptionReleaseTimestamp
+                        < Self.repeatedModifierInterval
+                    {
+                        // Sent again by the app, not pressed again.
+                        return true
+                    }
+                    // Hold to talk ends on release; toggle mode on the next
+                    // press, not a repeat of the one that started it.
+                    if voiceInput.isToggleMode
+                        ? isDown && isRightOptionReleasedSinceVoiceStart : !isDown
+                    {
                         finishVoiceRecording(client: client)
                     }
                 case .reviewing:
