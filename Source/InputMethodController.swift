@@ -683,6 +683,12 @@ extension McBopomofoInputMethodController {
                         voiceTogglePressTimestamp = nil
                         return false
                     }
+                    if let pressed = voiceTogglePressTimestamp,
+                        event.timestamp - pressed < Self.repeatedModifierInterval
+                    {
+                        // Sent again by the app (e.g. Chrome), not released.
+                        return true
+                    }
                     let toggleMode: Bool
                     if isDown && event.modifierFlags.contains(.command) {
                         // Toggle mode starts on release.
