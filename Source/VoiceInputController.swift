@@ -436,12 +436,12 @@ class VoiceInputController: NSObject {
         showComposedPreview()
     }
 
-    /// Switches typing in toggle mode between Bopomofo and English.
-    func toggleTypingLanguage() {
-        guard (phase == .recording && isToggleMode) || phase == .reviewing else {
+    /// Follows the input method switching between Chinese and English.
+    func setTypingEnglish(_ english: Bool) {
+        guard phase != .idle, english != isTypingEnglish else {
             return
         }
-        isTypingEnglish.toggle()
+        isTypingEnglish = english
         if phase == .reviewing {
             showReview()
         } else {

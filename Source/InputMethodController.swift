@@ -69,6 +69,11 @@ class McBopomofoInputMethodController: IMKInputController {
     // Whether the right Option key was released since voice input started.
     // Chrome sends the key press again after the placeholder is marked.
     private var isRightOptionReleasedSinceVoiceStart = false
+    // When Command + right Option was pressed, to start toggle-mode voice
+    // input on release unless another key is pressed in between (e.g. Command
+    // + Option + arrow keys to switch browser tabs).
+    private var voiceTogglePressTimestamp: TimeInterval?
+    private static let voiceToggleTapDuration: TimeInterval = 0.5
     // When the right Option key was last released during voice input.
     private var rightOptionReleaseTimestamp: TimeInterval = 0
     // Chrome sends a modifier key event again a few milliseconds after the
@@ -76,9 +81,10 @@ class McBopomofoInputMethodController: IMKInputController {
     private static let repeatedModifierInterval: TimeInterval = 0.05
     // The mode toggle key pressed with no other key since, and when.
     private var modeToggleTap: (keyCode: Int, time: Date)?
-    // When another modifier key last changed. Apps such as Chrome send it
-    // again, so a mode toggle key pressed with it may look like a tap.
-    private var otherModifierTime = Date.distantPast
+    // When the voice input key (right Option) last changed. After Command +
+    // right Option, Chrome sends the Command key again, which may look like a
+    // tap.
+    private var voiceKeyTime = Date.distantPast
     // Whether keys type English, switched by tapping the mode toggle key. Shared
     // by all apps, like Caps Lock.
     private static var isEnglishMode = false
@@ -212,6 +218,7 @@ class McBopomofoInputMethodController: IMKInputController {
     }
 
     override func deactivateServer(_ client: Any!) {
+        voiceTogglePressTimestamp = nil
         if McBopomofoInputMethodController.modeBadgeOwner === self {
             ModeBadge.shared.hide()
             McBopomofoInputMethodController.modeBadgeOwner = nil
@@ -284,9 +291,15 @@ class McBopomofoInputMethodController: IMKInputController {
                 && Self.modeToggleKeys[Int(event.keyCode)] == nil)
         {
             modeToggleTap = nil
-            if event.type == .flagsChanged {
-                otherModifierTime = Date()
+            if event.type == .flagsChanged && Int(event.keyCode) == kVK_RightOption {
+                voiceKeyTime = Date()
             }
+        }
+        if event.type == .keyDown
+            || (event.type == .flagsChanged
+                && ![kVK_RightOption, kVK_Command, kVK_RightCommand].contains(Int(event.keyCode)))
+        {
+            voiceTogglePressTimestamp = nil
         }
         if Preferences.voiceInputEnabled && handleVoiceInput(event: event, client: client) {
             if event.type == .keyDown {
@@ -405,27 +418,45 @@ class McBopomofoInputMethodController: IMKInputController {
                 ? (keyCode, Date()) : nil
             return
         }
+        if event.modifierFlags.contains(flag) {
+            // Pressed again without a release: sent again by the app (e.g.
+            // Chrome), possibly after the release, so time from this press.
+            modeToggleTap = (keyCode, Date())
+            return
+        }
         modeToggleTap = nil
         // Held longer: likely a key combination the app was not told of, such
         // as Cmd + Tab or Cmd + click.
-        guard Date().timeIntervalSince(tap.time) < Self.modeToggleTapDuration,
-            Date().timeIntervalSince(otherModifierTime) > Self.modeToggleQuietInterval
+        let tapDuration =
+            keyCode == kVK_Option ? Self.leftOptionTapDuration : Self.modeToggleTapDuration
+        guard Date().timeIntervalSince(tap.time) < tapDuration,
+            Date().timeIntervalSince(voiceKeyTime) > Self.modeToggleQuietInterval
         else {
             return
         }
-        if VoiceInputController.shared.phase != .idle {
-            // Typing during voice input has its own language.
-            VoiceInputController.shared.toggleTypingLanguage()
+        if VoiceInputController.shared.phase != .idle && !(state is InputState.Empty)
+            && !(state is InputState.EmptyIgnoringPreviousState)
+        {
+            // Composing text to type into the voice input.
             return
         }
+        toggleEnglishMode(client: client)
+    }
+
+    /// Switches between Chinese and English, also for typing during voice
+    /// input.
+    private func toggleEnglishMode(client: Any!) {
         // Finish what is being composed before switching.
         commitComposition(client)
         Self.isEnglishMode.toggle()
+        VoiceInputController.shared.setTypingEnglish(Self.isEnglishMode)
         showModeTip()
     }
 
     private static let modeToggleTapDuration: TimeInterval = 0.15
-    /// How long after another modifier key a tap is not taken as one.
+    /// Left Option is seldom held for key combinations, so allows a longer tap.
+    private static let leftOptionTapDuration: TimeInterval = 0.35
+    /// How long after the voice input key a tap is not taken as one.
     private static let modeToggleQuietInterval: TimeInterval = 0.5
 
     /// The mode toggle keys by key code, with the modifier flag each sets.
@@ -631,8 +662,8 @@ class McBopomofoInputMethodController: IMKInputController {
 extension McBopomofoInputMethodController {
 
     /// Handles voice input. Holding the right Option key records, releasing
-    /// it transcribes; with Command held when pressing it, recording toggles
-    /// on and stops on the next press. While toggled on, typed text joins the
+    /// it transcribes; tapping it with Command held, recording toggles on (on
+    /// release) and stops on the next press. While toggled on, typed text joins the
     /// voice input, and tapping the left Option key switches typing between
     /// Bopomofo and English. Returns true if the event is consumed.
     private func handleVoiceInput(event: NSEvent, client: Any!) -> Bool {
@@ -648,14 +679,35 @@ extension McBopomofoInputMethodController {
             case kVK_RightOption:
                 switch voiceInput.phase {
                 case .idle:
-                    guard isDown, isEmpty, let client = client as? IMKTextInput else {
+                    guard isEmpty, let client = client as? IMKTextInput else {
+                        voiceTogglePressTimestamp = nil
+                        return false
+                    }
+                    let toggleMode: Bool
+                    if isDown && event.modifierFlags.contains(.command) {
+                        // Toggle mode starts on release.
+                        voiceTogglePressTimestamp = event.timestamp
+                        return true
+                    } else if isDown {
+                        toggleMode = false
+                        isRightOptionReleasedSinceVoiceStart = false
+                    } else if let pressed = voiceTogglePressTimestamp,
+                        event.timestamp - pressed < Self.voiceToggleTapDuration
+                    {
+                        toggleMode = true
+                        isRightOptionReleasedSinceVoiceStart = true
+                        rightOptionReleaseTimestamp = event.timestamp
+                        voiceTogglePressTimestamp = nil
+                    } else {
+                        // Held too long, likely for a key combination the
+                        // input method was not told of.
+                        voiceTogglePressTimestamp = nil
                         return false
                     }
                     McBopomofoInputMethodController.voiceInputController = self
-                    isRightOptionReleasedSinceVoiceStart = false
                     voiceInput.start(
                         client: client,
-                        toggleMode: event.modifierFlags.contains(.command),
+                        toggleMode: toggleMode,
                         typesEnglish: typesEnglish,
                         preview: { [weak self] text in
                             self?.previewVoiceInput(text)
@@ -698,7 +750,7 @@ extension McBopomofoInputMethodController {
                 } else if isLeftOptionTapPending {
                     isLeftOptionTapPending = false
                     if isEmpty {
-                        voiceInput.toggleTypingLanguage()
+                        toggleEnglishMode(client: client)
                     }
                 }
                 return true
