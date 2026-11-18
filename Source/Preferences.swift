@@ -71,6 +71,7 @@ private let kVoiceInputPolishLevelKey = "VoiceInputPolishLevel"
 private let kVoiceInputDebugKey = "VoiceInputDebug"
 private let kVoiceInputReviewKey = "VoiceInputReview"
 private let kVoiceInputPanelKey = "VoiceInputPanel"
+private let kVoiceInputReviewStyleKey = "VoiceInputReviewStyle"
 private let kUseCustomUserPhraseLocation = "UseCustomUserPhraseLocation"
 private let kCustomUserPhraseLocation = "CustomUserPhraseLocation"
 
@@ -270,6 +271,7 @@ class Preferences: NSObject {
             kVoiceInputDebugKey,
             kVoiceInputReviewKey,
             kVoiceInputPanelKey,
+            kVoiceInputReviewStyleKey,
         ]
     }
 
@@ -614,6 +616,11 @@ extension Preferences {
     /// marked text with a tooltip.
     @UserDefault(key: kVoiceInputPanelKey, defaultValue: true)
     static var voiceInputPanel: Bool
+
+    /// How the result is checked: "vim" (Vim-style keys) or "bisect" (arrow
+    /// keys narrowing a selection).
+    @UserDefault(key: kVoiceInputReviewStyleKey, defaultValue: "vim")
+    static var voiceInputReviewStyle: String
 }
 
 @objc class UserPhraseLocationHelper: NSObject {

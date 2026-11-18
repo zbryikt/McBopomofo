@@ -843,6 +843,9 @@ extension McBopomofoInputMethodController {
                 return true
             }
         }
+        if let mode = voiceInput.vimMode {
+            return handleVimReview(mode: mode, keyCode: keyCode, event: event)
+        }
         switch keyCode {
         case kVK_Return, kVK_ANSI_KeypadEnter:
             voiceInput.commitReview()
@@ -890,6 +893,98 @@ extension McBopomofoInputMethodController {
             // Bopomofo: the key handler composes, and committed text is
             // inserted into the result.
             return false
+        }
+        return true
+    }
+
+    /// Handles keys while checking the result Vim-style. Returns false for
+    /// keys the key handler composes into Bopomofo while typing.
+    private func handleVimReview(mode: VimReviewEditor.Mode, keyCode: Int, event: NSEvent) -> Bool {
+        let voiceInput = VoiceInputController.shared
+        let flags = event.modifierFlags
+        let isCommandOrControl = !flags.intersection([.command, .control]).isEmpty
+        switch keyCode {
+        case kVK_Return, kVK_ANSI_KeypadEnter:
+            if mode == .commandLine {
+                voiceInput.handleVim(key: "<CR>")
+            } else {
+                voiceInput.commitReview()
+            }
+            return true
+        case kVK_ANSI_Z where isCommandOrControl:
+            if flags.contains(.shift) {
+                voiceInput.redoReview()
+            } else {
+                voiceInput.undoReview()
+            }
+            return true
+        default:
+            break
+        }
+
+        if mode == .insert {
+            switch keyCode {
+            case kVK_Escape:
+                voiceInput.vimEscape()
+            case kVK_Delete:
+                voiceInput.vimBackspace()
+            case kVK_LeftArrow, kVK_RightArrow:
+                voiceInput.vimMoveInInsert(by: keyCode == kVK_RightArrow ? 1 : -1)
+            case kVK_Space:
+                voiceInput.insert(typedText: " ")
+            default:
+                if isCommandOrControl {
+                    return true
+                }
+                if voiceInput.isTypingEnglish {
+                    if let characters = event.characters, !characters.isEmpty,
+                        characters.unicodeScalars.allSatisfy({
+                            !CharacterSet.controlCharacters.contains($0)
+                        })
+                    {
+                        voiceInput.insert(typedText: characters)
+                    }
+                    return true
+                }
+                // Bopomofo: the key handler composes, and committed text is
+                // inserted.
+                return false
+            }
+            return true
+        }
+
+        // Normal, visual and command-line modes: keys are commands.
+        let key: String?
+        switch keyCode {
+        case kVK_Escape:
+            key = "<Esc>"
+        case kVK_Delete:
+            key = "<BS>"
+        case kVK_LeftArrow:
+            key = "<Left>"
+        case kVK_RightArrow:
+            key = "<Right>"
+        case kVK_ANSI_R where flags.contains(.control):
+            key = "<C-r>"
+        default:
+            if isCommandOrControl {
+                key = nil
+            } else if var characters = event.characters, characters.count == 1,
+                characters.unicodeScalars.allSatisfy({
+                    !CharacterSet.controlCharacters.contains($0)
+                })
+            {
+                // Caps Lock does not make commands capital.
+                if flags.contains(.capsLock) && !flags.contains(.shift) {
+                    characters = characters.lowercased()
+                }
+                key = characters
+            } else {
+                key = nil
+            }
+        }
+        if let key = key {
+            voiceInput.handleVim(key: key)
         }
         return true
     }

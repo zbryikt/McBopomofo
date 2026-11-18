@@ -479,6 +479,12 @@ class VoiceInputController: NSObject {
         guard phase == .reviewing, !text.isEmpty else {
             return
         }
+        if vim != nil {
+            vim!.insert(text)
+            dismissCandidates()
+            showReview()
+            return
+        }
         let point = reviewInsertionPoint
         let length = (text as NSString).length
         recordUndo()
@@ -628,6 +634,8 @@ class VoiceInputController: NSObject {
     }
     private var undoStack: [ReviewSnapshot] = []
     private var redoStack: [ReviewSnapshot] = []
+    /// With the Vim review style, the editor that owns the text being checked.
+    private var vim: VimReviewEditor?
 
     private var reviewSnapshot: ReviewSnapshot {
         ReviewSnapshot(text: reviewText, selection: selection, cursor: reviewCursor)
@@ -647,6 +655,12 @@ class VoiceInputController: NSObject {
     }
 
     func undoReview() {
+        if phase == .reviewing && vim != nil {
+            vim!.undo()
+            dismissCandidates()
+            showReview()
+            return
+        }
         guard phase == .reviewing, let snapshot = undoStack.popLast() else {
             return
         }
@@ -655,6 +669,12 @@ class VoiceInputController: NSObject {
     }
 
     func redoReview() {
+        if phase == .reviewing && vim != nil {
+            vim!.redo()
+            dismissCandidates()
+            showReview()
+            return
+        }
         guard phase == .reviewing, let snapshot = redoStack.popLast() else {
             return
         }
@@ -679,6 +699,7 @@ class VoiceInputController: NSObject {
         undoStack = []
         redoStack = []
         selection = nil
+        vim = Preferences.voiceInputReviewStyle == "vim" ? VimReviewEditor(text: text) : nil
         reviewText = text as NSString
         reviewCursor = reviewText.length
         candidateRange = nil
@@ -688,6 +709,7 @@ class VoiceInputController: NSObject {
     }
 
     private func showReview() {
+        syncFromVim()
         previewText = reviewText as String
         if usesPanel {
             renderPanel()
@@ -703,10 +725,7 @@ class VoiceInputController: NSObject {
             : NSLocalizedString("Typing: Bopomofo (Left Option to switch)", comment: "")
         if candidates.isEmpty {
             showStatus(
-                (context.map { $0 + "\n" } ?? "") + typing + "\n"
-                    + NSLocalizedString(
-                    "Check: Enter to commit, ←→ to move, ↓ to narrow, ↑ for candidates, Esc to cancel",
-                    comment: ""))
+                (context.map { $0 + "\n" } ?? "") + typing + "\n" + reviewHint)
         } else {
             let list = candidates.prefix(maximumCandidates).enumerated()
                 .map { "\($0.offset + 1) \($0.element)" }.joined(separator: "　")
@@ -726,6 +745,139 @@ class VoiceInputController: NSObject {
             with: NSRange(location: NSMaxRange(range), length: end - NSMaxRange(range)))
         return (start > 0 ? "…" : "") + before + "【" + text.substring(with: range) + "】"
             + after + (end < text.length ? "…" : "")
+    }
+
+    /// What keys do while checking the result.
+    private var reviewHint: String {
+        guard let vim = vim else {
+            return NSLocalizedString(
+                "Check: Enter to commit, ←→ to move, ↓ to narrow, ↑ for candidates, Esc to cancel",
+                comment: "")
+        }
+        switch vim.mode {
+        case .insert:
+            return NSLocalizedString(
+                "-- INSERT -- (Esc to stop typing, Enter to commit)", comment: "")
+        case .visual:
+            return NSLocalizedString(
+                "-- VISUAL -- (d to delete, c to change, Right Option for candidates)",
+                comment: "") + (vim.pendingKeys.isEmpty ? "" : "　" + vim.pendingKeys)
+        case .commandLine:
+            return vim.pendingKeys
+        case .normal:
+            if !vim.pendingKeys.isEmpty {
+                return vim.pendingKeys
+            }
+            return NSLocalizedString(
+                "i to type, v to select, Right Option for candidates, Enter or :w to commit, :q to cancel",
+                comment: "")
+        }
+    }
+
+    // MARK: - Vim Review
+
+    /// The mode of the Vim review, or nil with the other review style.
+    var vimMode: VimReviewEditor.Mode? {
+        phase == .reviewing ? vim?.mode : nil
+    }
+
+    /// Handles a key in Vim normal, visual or command-line mode.
+    func handleVim(key: String) {
+        guard phase == .reviewing, vim != nil else {
+            return
+        }
+        dismissCandidates()
+        switch vim!.handle(key: key) {
+        case .commit:
+            commitReview()
+        case .cancel:
+            cancel()
+        case .none:
+            showReview()
+        }
+    }
+
+    /// Ends typing in Vim insert mode.
+    func vimEscape() {
+        vim?.escape()
+        dismissCandidates()
+        showReview()
+    }
+
+    /// Deletes the character before the cursor in Vim insert mode.
+    func vimBackspace() {
+        vim?.backspace()
+        dismissCandidates()
+        showReview()
+    }
+
+    /// Moves the cursor in Vim insert mode.
+    func vimMoveInInsert(by offset: Int) {
+        vim?.moveInInsert(by: offset)
+        dismissCandidates()
+        showReview()
+    }
+
+    private func dismissCandidates() {
+        suggestionTask?.cancel()
+        suggestionTask = nil
+        isSuggesting = false
+        candidateRange = nil
+        candidates = []
+    }
+
+    /// Takes the text, cursor and selection from the Vim editor.
+    private func syncFromVim() {
+        guard let vim = vim else {
+            return
+        }
+        reviewText = vim.text as NSString
+        let offsets = Self.utf16Offsets(of: vim.characters)
+        func range(_ characters: Range<Int>) -> NSRange {
+            NSRange(
+                location: offsets[characters.lowerBound],
+                length: offsets[characters.upperBound] - offsets[characters.lowerBound])
+        }
+        switch vim.mode {
+        case .insert:
+            selection = nil
+            reviewCursor = offsets[vim.cursor]
+        case .visual where vim.visualRange != nil:
+            selection = range(vim.visualRange!)
+            reviewCursor = NSMaxRange(selection!)
+        default:
+            if vim.characters.isEmpty {
+                selection = nil
+                reviewCursor = 0
+            } else {
+                // A block cursor on the character.
+                selection = range(vim.cursor..<(vim.cursor + 1))
+                reviewCursor = NSMaxRange(selection!)
+            }
+        }
+    }
+
+    /// The UTF-16 offset where each character starts, and the length.
+    private static func utf16Offsets(of characters: [String]) -> [Int] {
+        var offsets = [0]
+        for character in characters {
+            offsets.append(offsets.last! + (character as NSString).length)
+        }
+        return offsets
+    }
+
+    /// The characters in a UTF-16 range of the Vim editor's text.
+    private func vimCharacters(in range: NSRange) -> Range<Int>? {
+        guard let vim = vim else {
+            return nil
+        }
+        let offsets = Self.utf16Offsets(of: vim.characters)
+        guard let lower = offsets.firstIndex(of: range.location),
+            let upper = offsets.firstIndex(of: NSMaxRange(range))
+        else {
+            return nil
+        }
+        return lower..<upper
     }
 
     /// Commits the checked text.
@@ -796,6 +948,21 @@ class VoiceInputController: NSObject {
     /// Opens candidates for the selection, or for the word before the cursor.
     func openSelectionCandidates() {
         guard phase == .reviewing else {
+            return
+        }
+        if let vim = vim, vim.mode != .visual {
+            // The word at the cursor, or before it while typing.
+            guard reviewText.length > 0 else {
+                return
+            }
+            let index =
+                vim.mode == .insert
+                ? max(reviewCursor - 1, 0) : (selection?.location ?? reviewCursor)
+            if Self.word(in: reviewText, containing: index) != nil {
+                openCandidates(at: index)
+            } else {
+                openCandidates(in: reviewText.rangeOfComposedCharacterSequence(at: index))
+            }
             return
         }
         if let selection = selection {
@@ -932,6 +1099,13 @@ class VoiceInputController: NSObject {
             return
         }
         let candidate = candidates[index]
+        if vim != nil {
+            if let characters = vimCharacters(in: range) {
+                vim!.replace(characters, with: candidate)
+            }
+            closeCandidates()
+            return
+        }
         recordUndo()
         reviewText = reviewText.replacingCharacters(in: range, with: candidate) as NSString
         reviewCursor = range.location + (candidate as NSString).length
@@ -1011,6 +1185,7 @@ class VoiceInputController: NSObject {
         completion = nil
         previewText = ""
         reviewText = ""
+        vim = nil
         reviewCursor = 0
         undoStack = []
         redoStack = []
@@ -1102,11 +1277,7 @@ class VoiceInputController: NSObject {
             if isSuggesting {
                 footer = [NSLocalizedString("Suggesting...", comment: "")]
             } else if candidates.isEmpty {
-                footer = [
-                    NSLocalizedString(
-                        "Check: Enter to commit, ←→ to move, ↓ to narrow, ↑ for candidates, Esc to cancel",
-                        comment: "")
-                ]
+                footer = [reviewHint]
             } else {
                 footer = [
                     candidates.prefix(maximumCandidates).enumerated()

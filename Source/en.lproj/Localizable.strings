@@ -282,5 +282,8 @@
 "Suggesting..." = "Suggesting...";
 "No suggestions for the selection" = "No suggestions for the selection";
 "Voice input failed: " = "Voice input failed: ";
+"-- INSERT -- (Esc to stop typing, Enter to commit)" = "-- INSERT -- (Esc to stop typing, Enter to commit)";
+"-- VISUAL -- (d to delete, c to change, Right Option for candidates)" = "-- VISUAL -- (d to delete, c to change, Right Option for candidates)";
+"i to type, v to select, Right Option for candidates, Enter or :w to commit, :q to cancel" = "i to type, v to select, Right Option for candidates, Enter or :w to commit, :q to cancel";
 "%@ was not found. Add a line \"%@=your key\" to %@, then try again. See the README for details." = "%@ was not found. Add a line \"%@=your key\" to %@, then try again. See the README for details.";
 "Voice input copied to the clipboard" = "Voice input copied to the clipboard";

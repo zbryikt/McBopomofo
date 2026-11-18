@@ -61,6 +61,7 @@
 		D427F7C127908EFC004A2160 /* OpenCCBridge in Frameworks */ = {isa = PBXBuildFile; productRef = D427F7C027908EFC004A2160 /* OpenCCBridge */; };
 		D4314F0D2ED3690F0071DD71 /* NumberInputHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4314F0C2ED369090071DD71 /* NumberInputHelper.swift */; };
 		BD9B34BCFE7248D9AC4FE4AD /* VoiceInputController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4529999842D04EBA9DB8B70C /* VoiceInputController.swift */; };
+		1F0B7A8A657E422AAB993234 /* VimReviewEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E6FD035BBD149D9B1C9A1B8 /* VimReviewEditor.swift */; };
 		D436E23F2CD20BA700C6155D /* AssociatedPhrasesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D436E23E2CD20B9E00C6155D /* AssociatedPhrasesTests.swift */; };
 		D43737C92DF9C35800D9707C /* InputMethodController+KeyHandlerDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D43737C82DF9C35100D9707C /* InputMethodController+KeyHandlerDelegate.swift */; };
 		D43737CB2DF9C48300D9707C /* InputMethodController+CandidateControllerDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D43737CA2DF9C48200D9707C /* InputMethodController+CandidateControllerDelegate.swift */; };
@@ -75,6 +76,7 @@
 		D476CB492827DB6300F48552 /* add-phrase-hook.sh in Resources */ = {isa = PBXBuildFile; fileRef = D476CB482827DB6300F48552 /* add-phrase-hook.sh */; };
 		D47B92C027972AD100458394 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = D47B92BF27972AC800458394 /* main.swift */; };
 		D47D73A427A5D43900255A50 /* KeyHandlerBopomofoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D47D73A327A5D43900255A50 /* KeyHandlerBopomofoTests.swift */; };
+		0D8F809612FF465C8FB36536 /* VimReviewEditorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD6DE7A81FEE45B7A1323386 /* VimReviewEditorTests.swift */; };
 		D47D73A827A6C84F00255A50 /* associated-phrases-v2.txt in Resources */ = {isa = PBXBuildFile; fileRef = D47D73A727A6C84F00255A50 /* associated-phrases-v2.txt */; };
 		D47D73A927A6C84F00255A50 /* associated-phrases-v2.txt in Resources */ = {isa = PBXBuildFile; fileRef = D47D73A727A6C84F00255A50 /* associated-phrases-v2.txt */; };
 		D47D73C327A7200500255A50 /* FSEventStreamHelper in Frameworks */ = {isa = PBXBuildFile; productRef = D47D73C227A7200500255A50 /* FSEventStreamHelper */; };
@@ -211,6 +213,7 @@
 		D427F7BF27908EAC004A2160 /* OpenCCBridge */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = OpenCCBridge; path = Packages/OpenCCBridge; sourceTree = "<group>"; };
 		D4314F0C2ED369090071DD71 /* NumberInputHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NumberInputHelper.swift; sourceTree = "<group>"; };
 		4529999842D04EBA9DB8B70C /* VoiceInputController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputController.swift; sourceTree = "<group>"; };
+		3E6FD035BBD149D9B1C9A1B8 /* VimReviewEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VimReviewEditor.swift; sourceTree = "<group>"; };
 		D436E23E2CD20B9E00C6155D /* AssociatedPhrasesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssociatedPhrasesTests.swift; sourceTree = "<group>"; };
 		D43737C82DF9C35100D9707C /* InputMethodController+KeyHandlerDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "InputMethodController+KeyHandlerDelegate.swift"; sourceTree = "<group>"; };
 		D43737CA2DF9C48200D9707C /* InputMethodController+CandidateControllerDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "InputMethodController+CandidateControllerDelegate.swift"; sourceTree = "<group>"; };
@@ -225,6 +228,7 @@
 		D476CB482827DB6300F48552 /* add-phrase-hook.sh */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.script.sh; path = "add-phrase-hook.sh"; sourceTree = "<group>"; };
 		D47B92BF27972AC800458394 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		D47D73A327A5D43900255A50 /* KeyHandlerBopomofoTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyHandlerBopomofoTests.swift; sourceTree = "<group>"; };
+		BD6DE7A81FEE45B7A1323386 /* VimReviewEditorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VimReviewEditorTests.swift; sourceTree = "<group>"; };
 		D47D73A727A6C84F00255A50 /* associated-phrases-v2.txt */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = "associated-phrases-v2.txt"; sourceTree = "<group>"; };
 		D47D73C027A71FFA00255A50 /* FSEventStreamHelper */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = FSEventStreamHelper; path = Packages/FSEventStreamHelper; sourceTree = "<group>"; };
 		D47F7DCF278C0897002F9DD7 /* NonModalAlertWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NonModalAlertWindowController.swift; sourceTree = "<group>"; };
@@ -343,6 +347,7 @@
 				D461B791279DAC010070E734 /* InputState.swift */,
 				D4314F0C2ED369090071DD71 /* NumberInputHelper.swift */,
 				4529999842D04EBA9DB8B70C /* VoiceInputController.swift */,
+				3E6FD035BBD149D9B1C9A1B8 /* VimReviewEditor.swift */,
 				D427F76B278CA1BA004A2160 /* AppDelegate.swift */,
 				D44FB74427915555003C80A6 /* Preferences.swift */,
 				D47F7DCF278C0897002F9DD7 /* NonModalAlertWindowController.swift */,
@@ -520,6 +525,7 @@
 			children = (
 				D436E23E2CD20B9E00C6155D /* AssociatedPhrasesTests.swift */,
 				D47D73A327A5D43900255A50 /* KeyHandlerBopomofoTests.swift */,
+				BD6DE7A81FEE45B7A1323386 /* VimReviewEditorTests.swift */,
 				D4A8E43527A9E982002F7A07 /* KeyHandlerPlainBopomofoTests.swift */,
 				D485D3B82796A8A000657FF3 /* PreferencesTests.swift */,
 				D485D3BF2796CE3200657FF3 /* VersionUpdateTests.swift */,
@@ -748,6 +754,7 @@
 				6A833E522F0A0FB30086AD0C /* VariantAnnotator.cpp in Sources */,
 				D4314F0D2ED3690F0071DD71 /* NumberInputHelper.swift in Sources */,
 				BD9B34BCFE7248D9AC4FE4AD /* VoiceInputController.swift in Sources */,
+				1F0B7A8A657E422AAB993234 /* VimReviewEditor.swift in Sources */,
 				D4E569DC27A34D0E00AC2CEF /* KeyHandler.mm in Sources */,
 				6A4F5F982879E838008C4307 /* reading_grid.cpp in Sources */,
 				D47F7DD0278C0897002F9DD7 /* NonModalAlertWindowController.swift in Sources */,
@@ -790,6 +797,7 @@
 				D449AD5F2B393C00000C5812 /* InputMacroTests.swift in Sources */,
 				D4C2A9872B4309D700113711 /* UTF8HelperTest.mm in Sources */,
 				D47D73A427A5D43900255A50 /* KeyHandlerBopomofoTests.swift in Sources */,
+				0D8F809612FF465C8FB36536 /* VimReviewEditorTests.swift in Sources */,
 				D485D3B92796A8A000657FF3 /* PreferencesTests.swift in Sources */,
 				D449AD612B39506D000C5812 /* ServiceProviderTests.swift in Sources */,
 				D485D3C02796CE3200657FF3 /* VersionUpdateTests.swift in Sources */,
