@@ -696,6 +696,11 @@ extension McBopomofoInputMethodController {
                         voiceTogglePressTimestamp = event.timestamp
                         return true
                     } else if isDown {
+                        // Only the right Option key alone; with other
+                        // modifiers it is part of a key combination.
+                        guard event.modifierFlags.intersection(Self.otherModifiers).isEmpty else {
+                            return false
+                        }
                         toggleMode = false
                         isRightOptionReleasedSinceVoiceStart = false
                     } else if let pressed = voiceTogglePressTimestamp,
@@ -749,6 +754,15 @@ extension McBopomofoInputMethodController {
                     break
                 }
                 return true
+            case kVK_Command, kVK_RightCommand, kVK_Control, kVK_RightControl, kVK_Shift,
+                kVK_RightShift, kVK_Function
+            where voiceInput.phase == .recording && !voiceInput.isToggleMode
+                && event.modifierFlags.contains(.option)
+                && !event.modifierFlags.intersection(Self.otherModifiers).isEmpty:
+                // Another modifier while holding the right Option key: a key
+                // combination, not talking.
+                voiceInput.cancel()
+                return false
             case kVK_Shift, kVK_RightShift
             where Self.voiceToggleModifier == .shift && voiceInput.phase == .recording
                 && !voiceInput.isToggleMode && McBopomofoInputMethodController.voiceInputController === self:
@@ -1024,6 +1038,13 @@ extension McBopomofoInputMethodController {
     }
 
     /// Finishes a recording, first adding what is being composed.
+    /// Modifiers that make the right Option key part of a key combination,
+    /// other than the one that records in toggle mode.
+    private static var otherModifiers: NSEvent.ModifierFlags {
+        NSEvent.ModifierFlags([.command, .control, .shift, .function]).subtracting(
+            voiceToggleModifier)
+    }
+
     /// The modifier held with the right Option key to record in toggle mode.
     private static var voiceToggleModifier: NSEvent.ModifierFlags {
         Preferences.voiceInputToggleKey == "commandRightOption" ? .command : .shift
