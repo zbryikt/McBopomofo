@@ -72,6 +72,7 @@ private let kVoiceInputDebugKey = "VoiceInputDebug"
 private let kVoiceInputReviewKey = "VoiceInputReview"
 private let kVoiceInputPanelKey = "VoiceInputPanel"
 private let kVoiceInputReviewStyleKey = "VoiceInputReviewStyle"
+private let kVoiceInputToggleKeyKey = "VoiceInputToggleKey"
 private let kUseCustomUserPhraseLocation = "UseCustomUserPhraseLocation"
 private let kCustomUserPhraseLocation = "CustomUserPhraseLocation"
 
@@ -272,6 +273,7 @@ class Preferences: NSObject {
             kVoiceInputReviewKey,
             kVoiceInputPanelKey,
             kVoiceInputReviewStyleKey,
+            kVoiceInputToggleKeyKey,
         ]
     }
 
@@ -621,6 +623,11 @@ extension Preferences {
     /// keys narrowing a selection).
     @UserDefault(key: kVoiceInputReviewStyleKey, defaultValue: "vim")
     static var voiceInputReviewStyle: String
+
+    /// The modifier held while tapping the right Option key to record in
+    /// toggle mode: "shiftRightOption" or "commandRightOption".
+    @UserDefault(key: kVoiceInputToggleKeyKey, defaultValue: "shiftRightOption")
+    static var voiceInputToggleKey: String
 }
 
 @objc class UserPhraseLocationHelper: NSObject {

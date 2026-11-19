@@ -83,6 +83,8 @@ done
 BUNDLE_ID="$(defaults read "$INSTALLED_APP/Contents/Info" CFBundleIdentifier)"
 echo "==> Reselecting the input source"
 sleep 1
+# The system does not always launch it again on its own.
+pgrep -f "$INSTALLED_APP/Contents/MacOS/" >/dev/null || open "$INSTALLED_APP"
 swift "$SCRIPT_DIR/reselect-input-source.swift" "$BUNDLE_ID" || true
 
 echo "==> Done. In other apps already open, switch to another input source and back."

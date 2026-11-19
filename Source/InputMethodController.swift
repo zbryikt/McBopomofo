@@ -297,7 +297,8 @@ class McBopomofoInputMethodController: IMKInputController {
         }
         if event.type == .keyDown
             || (event.type == .flagsChanged
-                && ![kVK_RightOption, kVK_Command, kVK_RightCommand].contains(Int(event.keyCode)))
+                && ![kVK_RightOption, kVK_Command, kVK_RightCommand, kVK_Shift, kVK_RightShift]
+                    .contains(Int(event.keyCode)))
         {
             voiceTogglePressTimestamp = nil
         }
@@ -690,7 +691,7 @@ extension McBopomofoInputMethodController {
                         return true
                     }
                     let toggleMode: Bool
-                    if isDown && event.modifierFlags.contains(.command) {
+                    if isDown && event.modifierFlags.contains(Self.voiceToggleModifier) {
                         // Toggle mode starts on release.
                         voiceTogglePressTimestamp = event.timestamp
                         return true
@@ -748,6 +749,17 @@ extension McBopomofoInputMethodController {
                     break
                 }
                 return true
+            case kVK_Shift, kVK_RightShift
+            where Self.voiceToggleModifier == .shift && voiceInput.phase == .recording
+                && !voiceInput.isToggleMode && McBopomofoInputMethodController.voiceInputController === self:
+                // Shift while holding the right Option key: keep recording
+                // after the right Option key is released.
+                if event.modifierFlags.contains(.shift) && event.modifierFlags.contains(.option) {
+                    isRightOptionReleasedSinceVoiceStart = false
+                    voiceInput.switchToToggleMode()
+                    return true
+                }
+                return false
             case kVK_Option where isTypingIntoVoiceInput:
                 // A tap of the left Option key: pressed and released with no
                 // other key in between.
@@ -1012,6 +1024,11 @@ extension McBopomofoInputMethodController {
     }
 
     /// Finishes a recording, first adding what is being composed.
+    /// The modifier held with the right Option key to record in toggle mode.
+    private static var voiceToggleModifier: NSEvent.ModifierFlags {
+        Preferences.voiceInputToggleKey == "commandRightOption" ? .command : .shift
+    }
+
     private func finishVoiceRecording(client: Any!) {
         if isTypingIntoVoiceInput && state is InputState.NotEmpty {
             commitComposition(client)

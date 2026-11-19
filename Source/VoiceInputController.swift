@@ -1198,13 +1198,25 @@ class VoiceInputController: NSObject {
         panel.hide()
     }
 
+    private var toggleModeListeningHint: String {
+        NSLocalizedString("Listening... (Right Option to finish, Esc to cancel)", comment: "")
+    }
+
+    /// Keeps a hold-to-talk recording going after the key is released.
+    func switchToToggleMode() {
+        guard phase == .recording, !isToggleMode else {
+            return
+        }
+        isToggleMode = true
+        showRecordingStatus()
+    }
+
     private func showRecordingStatus() {
         let level = Preferences.voiceInputPolishLevel
         let meter = String(repeating: "■", count: level) + String(repeating: "□", count: 10 - level)
         var lines = [
             isToggleMode
-                ? NSLocalizedString(
-                    "Listening... (Right Option to finish, Esc to cancel)", comment: "")
+                ? toggleModeListeningHint
                 : NSLocalizedString("Listening... (release to finish, Esc to cancel)", comment: ""),
             String(
                 format: NSLocalizedString("Polish level %d %@ (↑↓ to adjust)", comment: ""),
@@ -1250,8 +1262,7 @@ class VoiceInputController: NSObject {
             if isToggleMode {
                 header.append(typing)
                 footer = [
-                    NSLocalizedString(
-                        "Listening... (Right Option to finish, Esc to cancel)", comment: ""),
+                    toggleModeListeningHint,
                     isTypingEnglish
                         ? NSLocalizedString("Typing: English (Left Option to switch)", comment: "")
                         : NSLocalizedString("Typing: Bopomofo (Left Option to switch)", comment: ""),

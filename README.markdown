@@ -39,10 +39,16 @@ API key 只從這個檔案讀取，不會寫進 log。語音與文字會送往�
 | 按鍵 | 作用 |
 |---|---|
 | 按住右 Option | 說話，放開後辨識並潤飾 |
-| Cmd + 右 Option | 開始說話，再按一次右 Option 或 Enter 結束；說話時可以同時打字 |
+| Shift + 右 Option | 開始說話，再按一次右 Option 或 Enter 結束；說話時可以同時打字。按住右 Option 說話時再按 Shift，放開後也會繼續錄 |
 | 說話時 ↑ / ↓ | 調整潤飾強度（0 不潤飾，10 最多） |
 | 說話時單按左 Option | 切換打字用注音或英文 |
 | Esc | 取消 |
+
+想改回用 Cmd + 右 Option 開始：
+
+```
+defaults write io.github.zbryikt.inputmethod.DaMaiVoice VoiceInputToggleKey commandRightOption
+```
 
 ### 校正
 
