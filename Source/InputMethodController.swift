@@ -755,20 +755,20 @@ extension McBopomofoInputMethodController {
                 }
                 return true
             case kVK_Command, kVK_RightCommand, kVK_Control, kVK_RightControl, kVK_Shift,
-                kVK_RightShift, kVK_Function
-            where voiceInput.phase == .recording && !voiceInput.isToggleMode
-                && event.modifierFlags.contains(.option)
-                && !event.modifierFlags.intersection(Self.otherModifiers).isEmpty:
-                // Another modifier while holding the right Option key: a key
-                // combination, not talking.
-                voiceInput.cancel()
-                return false
-            case kVK_Shift, kVK_RightShift
-            where Self.voiceToggleModifier == .shift && voiceInput.phase == .recording
-                && !voiceInput.isToggleMode && McBopomofoInputMethodController.voiceInputController === self:
-                // Shift while holding the right Option key: keep recording
-                // after the right Option key is released.
-                if event.modifierFlags.contains(.shift) && event.modifierFlags.contains(.option) {
+                kVK_RightShift, kVK_Function:
+                guard voiceInput.phase == .recording && !voiceInput.isToggleMode
+                    && McBopomofoInputMethodController.voiceInputController === self
+                    && event.modifierFlags.contains(.option)
+                else {
+                    return false
+                }
+                if !event.modifierFlags.intersection(Self.otherModifiers).isEmpty {
+                    // Another modifier while holding the right Option key: a
+                    // key combination, not talking.
+                    voiceInput.cancel()
+                } else if event.modifierFlags.contains(Self.voiceToggleModifier) {
+                    // Shift while holding the right Option key: keep
+                    // recording after the right Option key is released.
                     isRightOptionReleasedSinceVoiceStart = false
                     voiceInput.switchToToggleMode()
                     return true
